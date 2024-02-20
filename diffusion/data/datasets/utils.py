@@ -85,12 +85,21 @@ def get_chunks(lst, n):
         yield lst[i:i + n]
 
 def get_vae_feature_path(vae_save_root, image_path, signature):
-    path_aware_name = '_'.join(image_path.rsplit('/', 2)[-2:]) # change from 'serial-number-of-dir/serial-number-of-image.png' ---> 'serial-number-of-dir_serial-number-of-image.png'
-    npy_name = os.path.splitext(path_aware_name)[0] + '.npy'
-    output_folder = os.path.join(vae_save_root, signature)
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder, exist_ok=True)
-    return os.path.join(output_folder, npy_name)
+    if signature:
+        root_dir = f"{vae_save_root}/{signature}"
+    else:
+        root_dir = vae_save_root
+
+    return get_feature_path(root_dir, image_path, '.npy')
 
 def get_t5_feature_path(t5_save_dir, image_path):
-    return os.path.join(t5_save_dir, Path(image_path).stem + '.npz')
+    return get_feature_path(t5_save_dir, image_path, '.npz')
+
+def get_feature_path(root_dir, image_path, extension):
+    safe_name = image_path.replace('/', '---').replace('\\', '---')
+    safe_name_no_ext = safe_name.rsplit('.', 1)[0]  # Remove the original extension
+    if not extension.startswith('.'):
+        extension = '.' + extension
+    # Return the transformed path as a safe filename with the new extension
+    return os.path.join(root_dir, safe_name_no_ext + extension)
+    

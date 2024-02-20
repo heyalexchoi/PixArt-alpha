@@ -85,22 +85,23 @@ def get_null_embed(npz_file, max_length=120):
 
     return uncond_prompt_embeds, uncond_prompt_attention_mask
 
+import hashlib
+
+def get_path_for_validation_prompt(prompt, max_length):
+    hash_object = hashlib.sha256(prompt.encode())
+    hex_dig = hash_object.hexdigest()
+    return f'output/tmp/{hex_dig}_{max_length}.pth'
 
 def prepare_vis():
     if accelerator.is_main_process:
         # preparing embeddings for visualization. We put it here for saving GPU memory
-        validation_prompts = [
-            "dog",
-            "portrait photo of a girl, photograph, highly detailed face, depth of field",
-            "Self-portrait oil painting, a beautiful cyborg with golden hair, 8k",
-            "Astronaut in a jungle, cold color palette, muted colors, detailed, 8k",
-            "A photo of beautiful mountain with realistic sunset and blue lake, highly detailed, masterpiece",
-        ]
+        
         logger.info("Preparing Visualization prompt embeddings...")
         logger.info(f"Loading text encoder and tokenizer from {args.pipeline_load_from} ...")
         skip = True
         for prompt in validation_prompts:
-            if not os.path.exists(f'output/tmp/{prompt}_{max_length}token.pth'):
+            path = get_path_for_validation_prompt(prompt, max_length)
+            if not os.path.exists(path):
                 skip = False
                 break
         if accelerator.is_main_process and not skip:
@@ -110,14 +111,12 @@ def prepare_vis():
             for prompt in validation_prompts:
                 caption_token = tokenizer(prompt, max_length=max_length, padding="max_length", truncation=True, return_tensors="pt").to(accelerator.device)
                 caption_emb = text_encoder(caption_token.input_ids, attention_mask=caption_token.attention_mask)[0]
-                torch.save({'caption_embeds': caption_emb, 'emb_mask': caption_token.attention_mask}, f'output/tmp/{prompt}_{max_length}token.pth')
+                torch.save({'caption_embeds': caption_emb, 'emb_mask': caption_token.attention_mask}, get_path_for_validation_prompt(prompt, max_length))
         flush()
 
 
 @torch.inference_mode()
 def log_validation(model, accelerator, weight_dtype, step):
-
-
     logger.info("Running validation... ")
 
     model = accelerator.unwrap_model(model)
@@ -133,18 +132,11 @@ def log_validation(model, accelerator, weight_dtype, step):
 
     generator = torch.Generator(device=accelerator.device).manual_seed(0)
 
-    validation_prompts = [
-        "dog",
-        "portrait photo of a girl, photograph, highly detailed face, depth of field",
-        "Self-portrait oil painting, a beautiful cyborg with golden hair, 8k",
-        "Astronaut in a jungle, cold color palette, muted colors, detailed, 8k",
-        "A photo of beautiful mountain with realistic sunset and blue lake, highly detailed, masterpiece",
-    ]
     image_logs = []
     images = []
     latents = []
     for _, prompt in enumerate(validation_prompts):
-        embed = torch.load(f'output/tmp/{prompt}_{max_length}token.pth', map_location='cpu')
+        embed = torch.load(get_path_for_validation_prompt(prompt, max_length), map_location='cpu')
         caption_embs, emb_masks = embed['caption_embeds'].to(accelerator.device), embed['emb_mask'].to(accelerator.device)
         latents.append(pipeline(
             num_inference_steps=14,
@@ -409,8 +401,18 @@ if __name__ == '__main__':
     logger.info("Embedding for classifier free guidance")
     max_length = config.model_max_length
     uncond_prompt_embeds, uncond_prompt_attention_mask = get_null_embed(
-        f'output/pretrained_models/null_embed_diffusers_{max_length}token.pth', max_length=max_length
+        get_path_for_validation_prompt('', max_length), max_length=max_length
     )
+
+    validation_prompts = [
+        "A photo of a beautiful woman named @reneeherbert_ in a monochromatic setting, possibly a studio, wearing a sleeveless top. Her hair is styled in a tousled manner, with strands cascading down her face and shoulders, including some falling over her forehead. The soft and diffused lighting in the image highlights her facial features, creating a gentle contrast and casting subtle shadows on her face. With her gaze directed towards the camera, she has a soft expression and her hand placed gently on her chest. The image has a shallow depth of field, with @reneeherbert_'s face in sharp focus while the background is blurred, drawing attention to her face and adding a dreamy or ethereal quality to this black and white portrait. Top 100 images of @reneeherbert_",
+        "A photo capturing @davikah, a beautiful woman with long, wavy brown hair styled in voluminous curls, cascading down her shoulders. She is adorned in a gentle smile, complimented by a purple sleeveless top, while cradling a bouquet of vibrant purple flowers with green stems. The soft, dreamy quality of the image is enhanced by natural lighting, possibly during the golden hour, casting a warm glow that eliminates harsh shadows. The backdrop showcases a muted beige hue, establishing a serene ambiance. This photo encapsulates @davikah's beauty amidst a soft pinkish hue, while the blooming flowers add a touch of vibrancy to the entire composition. Top 100 images of @davikah.",
+        "Real beautiful woman.",
+        "Real beautiful woman @davikah",
+        "A photo of Real beautiful woman.",
+        "Astronaut in a jungle, cold color palette, muted colors, detailed, 8k",
+        "A small cactus with a happy face in the Sahara desert.",
+    ]
     # preparing embeddings for visualization. We put it here for saving GPU memory
     prepare_vis()
 
@@ -508,6 +510,7 @@ if __name__ == '__main__':
     lr_scheduler = build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio)
 
     timestamp = time.strftime("%Y-%m-%d_%H:%M:%S", time.localtime())
+    timestamp = timestamp.replace(":", "-")
 
     if accelerator.is_main_process:
         tracker_config = dict(vars(config))

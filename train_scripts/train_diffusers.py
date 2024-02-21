@@ -344,6 +344,8 @@ if __name__ == '__main__':
         config.log_interval = 1
         config.train_batch_size = 32
         config.valid_num = 100
+    if not config.validation_prompts:
+        print("No validation prompts provided. Will use default validation prompts.")
 
     os.umask(0o000)
     os.makedirs(config.work_dir, exist_ok=True)
@@ -404,15 +406,8 @@ if __name__ == '__main__':
         get_path_for_validation_prompt('', max_length), max_length=max_length
     )
 
-    validation_prompts = [
-        "A photo of a beautiful woman named @reneeherbert_ in a monochromatic setting, possibly a studio, wearing a sleeveless top. Her hair is styled in a tousled manner, with strands cascading down her face and shoulders, including some falling over her forehead. The soft and diffused lighting in the image highlights her facial features, creating a gentle contrast and casting subtle shadows on her face. With her gaze directed towards the camera, she has a soft expression and her hand placed gently on her chest. The image has a shallow depth of field, with @reneeherbert_'s face in sharp focus while the background is blurred, drawing attention to her face and adding a dreamy or ethereal quality to this black and white portrait. Top 100 images of @reneeherbert_",
-        "A photo capturing @davikah, a beautiful woman with long, wavy brown hair styled in voluminous curls, cascading down her shoulders. She is adorned in a gentle smile, complimented by a purple sleeveless top, while cradling a bouquet of vibrant purple flowers with green stems. The soft, dreamy quality of the image is enhanced by natural lighting, possibly during the golden hour, casting a warm glow that eliminates harsh shadows. The backdrop showcases a muted beige hue, establishing a serene ambiance. This photo encapsulates @davikah's beauty amidst a soft pinkish hue, while the blooming flowers add a touch of vibrancy to the entire composition. Top 100 images of @davikah.",
-        "Real beautiful woman.",
-        "Real beautiful woman @davikah",
-        "A photo of Real beautiful woman.",
-        "Astronaut in a jungle, cold color palette, muted colors, detailed, 8k",
-        "A small cactus with a happy face in the Sahara desert.",
-    ]
+    validation_prompts = config.validation_prompts
+
     # preparing embeddings for visualization. We put it here for saving GPU memory
     prepare_vis()
 

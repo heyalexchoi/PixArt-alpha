@@ -202,7 +202,6 @@ def extract_caption_t5():
     jobs.join()
 
 def save_results(results, paths, signature, vae_save_root):
-    timer = SimpleTimer(len(results), log_interval=100, desc="Saving Results")
     # save to npy
     new_paths = []
     os.umask(0o000)  # file permission: 666; dir permission: 777
@@ -217,14 +216,13 @@ def save_results(results, paths, signature, vae_save_root):
         filename = os.path.basename(output_path)
         new_paths.append(os.path.join(dirname_base, filename))
         np.save(output_path, res)
-        timer.log()
     # save paths
     with open(os.path.join(vae_save_root, f"VAE-{signature}.txt"), 'a') as f:
         f.write('\n'.join(new_paths) + '\n')
 
 
 def inference(vae, dataloader, signature, vae_save_root):
-    timer = SimpleTimer(len(dataloader), log_interval=100, desc="VAE-Inference")
+    timer = SimpleTimer(len(dataloader), log_interval=5000, desc="VAE-Inference")
 
     for batch in dataloader:
         with torch.no_grad():

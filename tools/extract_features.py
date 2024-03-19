@@ -218,12 +218,6 @@ def extract_img_vae():
     train_data_json = json.load(open(args.json_path, 'r'))
     image_names = set()
 
-    os.umask(0o000)  # file permission: 666; dir permission: 777
-    os.makedirs(vae_save_root, exist_ok=True)
-
-    vae_save_dir = os.path.join(vae_save_root, 'noflip')
-    os.makedirs(vae_save_dir, exist_ok=True)
-
     for item in train_data_json:
         image_name = item['path']
         if image_name in image_names:
@@ -231,8 +225,6 @@ def extract_img_vae():
         image_names.add(image_name)
     lines = sorted(image_names)
     lines = lines[args.start_index: args.end_index]
-
-    _, images_extension = os.path.splitext(lines[0])
 
     transform = T.Compose([
         T.Lambda(lambda img: img.convert('RGB')),
@@ -242,12 +234,11 @@ def extract_img_vae():
         T.Normalize([.5], [.5]),
     ])
 
-    os.umask(0o000)  # file permission: 666; dir permission: 777
     for image_name in tqdm(lines):
         signature = get_vae_signature(resolution=image_resize, is_multiscale=False)
         save_path = get_vae_feature_path(
             vae_save_root=vae_save_root, 
-            image_path=args.json_path, 
+            image_path=image_name, 
             signature=signature,
             )
         
@@ -261,6 +252,10 @@ def extract_img_vae():
                 posterior = vae.encode(img).latent_dist
                 z = torch.cat([posterior.mean, posterior.std], dim=1).detach().cpu().numpy().squeeze()
 
+            # os.umask(0o000)  # file permission: 666; dir permission: 777
+            save_dir = os.path.dirname(save_path)
+            if not os.path.exists(save_dir):
+                os.makedirs(save_dir, exist_ok=True)
             np.save(save_path, z)
         except Exception as e:
             print(e)

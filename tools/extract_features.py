@@ -210,7 +210,10 @@ def save_results(results, paths, signature, vae_save_root):
         output_path = get_vae_feature_path(vae_save_root=vae_save_root, 
                              image_path=p, 
                              signature=signature)
-        dirname_base = os.path.basename(os.path.dirname(output_path))
+        dirname = os.path.dirname(output_path)
+        if not os.path.exists(dirname):
+            os.makedirs(dirname, exist_ok=True)
+        dirname_base = os.path.basename(dirname)
         filename = os.path.basename(output_path)
         new_paths.append(os.path.join(dirname_base, filename))
         np.save(output_path, res)
@@ -314,7 +317,7 @@ if __name__ == '__main__':
         if not multi_scale:
             # basically seemed like the two did the same thing except one code path was shittier
             # and the non-multi-scale cropped to square instead of looking for nearest aspect ratio
-            logger.warning('Single scale feature extraction is not supported currently.')
+            logger.warning('Single scale feature extraction is not supported currently. Images not be forced into squares.')
 
         # recommend bs = 1 for AspectRatioBatchSampler
         # not sure why bs = 1 is recommended. bigger batches are used in training. try higher.

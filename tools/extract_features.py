@@ -355,6 +355,7 @@ if __name__ == '__main__':
     args = get_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     image_resize = args.img_size
+    multi_scale = args.multi_scale
     vae_save_root = os.path.abspath(args.vae_save_root)
     t5_save_dir = args.t5_save_root
     json_path = args.json_path
@@ -373,9 +374,8 @@ if __name__ == '__main__':
 
     if not args.skip_vae:
         # prepare extracted image vae features for training
-        if args.multi_scale:
-            print(f'Extracting Multi-scale Image Resolution based on {image_resize}')
+        logger.info(f"Extracting VAE features for {json_path}\nmulti_scale: {multi_scale}\nimage_resize: {image_resize}\nDevice: {device}\nSave to: {vae_save_root}")
+        if multi_scale:
             extract_img_vae_multiscale(bs=1)    # recommend bs = 1 for AspectRatioBatchSampler
         else:
-            print(f'Extracting Single Image Resolution {image_resize}')
             extract_img_vae()

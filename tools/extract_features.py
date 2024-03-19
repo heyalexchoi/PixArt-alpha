@@ -81,7 +81,7 @@ class DatasetMS(InternalData):
                     else:
                         vae_already_processed.append(sample_path)
 
-        print(f"VAE processing skipping {len(vae_already_processed)} images already processed")
+        logger.info(f"VAE processing skipping {len(vae_already_processed)} images already processed")
 
         self.img_samples = self.img_samples[start_index: end_index]
         # scan the dataset for ratio static
@@ -124,7 +124,7 @@ class DatasetMS(InternalData):
                 # change the path according to your data structure
                 return img, self.img_samples[idx]
             except Exception as e:
-                print(f"Error details: {str(e)}")
+                logger.exception(f"Error details: {str(e)}")
                 idx = np.random.randint(len(self))
         raise RuntimeError('Too many bad data.')
 
@@ -201,67 +201,6 @@ def extract_caption_t5():
 
     jobs.join()
 
-def extract_img_vae_do(q):
-    while not q.empty():
-        item = q.get()
-        extract_img_vae_job(item)
-        q.task_done()
-
-
-def extract_img_vae_job(item):
-    return
-
-
-def extract_img_vae():
-    vae = AutoencoderKL.from_pretrained(f'{args.pretrained_models_dir}/sd-vae-ft-ema').to(device)
-
-    train_data_json = json.load(open(args.json_path, 'r'))
-    image_names = set()
-
-    for item in train_data_json:
-        image_name = item['path']
-        if image_name in image_names:
-            continue
-        image_names.add(image_name)
-    lines = sorted(image_names)
-    lines = lines[args.start_index: args.end_index]
-
-    transform = T.Compose([
-        T.Lambda(lambda img: img.convert('RGB')),
-        T.Resize(image_resize),  # Image.BICUBIC
-        T.CenterCrop(image_resize),
-        T.ToTensor(),
-        T.Normalize([.5], [.5]),
-    ])
-
-    for image_name in tqdm(lines):
-        signature = get_vae_signature(resolution=image_resize, is_multiscale=False)
-        save_path = get_vae_feature_path(
-            vae_save_root=vae_save_root, 
-            image_path=image_name, 
-            signature=signature,
-            )
-        
-        if os.path.exists(save_path):
-            continue
-        try:
-            img = Image.open(f'{dataset_root}/{image_name}')
-            img = transform(img).to(device)[None]
-
-            with torch.no_grad():
-                posterior = vae.encode(img).latent_dist
-                z = torch.cat([posterior.mean, posterior.std], dim=1).detach().cpu().numpy().squeeze()
-
-            # os.umask(0o000)  # file permission: 666; dir permission: 777
-            save_dir = os.path.dirname(save_path)
-            if not os.path.exists(save_dir):
-                os.makedirs(save_dir, exist_ok=True)
-            np.save(save_path, z)
-        except Exception as e:
-            print(e)
-            print(image_name)
-
-
 def save_results(results, paths, signature, vae_save_root):
     timer = SimpleTimer(len(results), log_interval=100, desc="Saving Results")
     # save to npy
@@ -294,7 +233,7 @@ def inference(vae, dataloader, signature, vae_save_root):
         timer.log()
 
 
-def extract_img_vae_multiscale(bs=1):
+def extract_img_vae_multiscale(batch_size=1):
     assert image_resize in [256, 512, 1024]
     os.umask(0o000)  # file permission: 666; dir permission: 777
     os.makedirs(vae_save_root, exist_ok=True)
@@ -312,7 +251,7 @@ def extract_img_vae_multiscale(bs=1):
                         aspect_ratio_type=aspect_ratio_type, start_index=start_index, end_index=end_index)
 
     # create AspectRatioBatchSampler
-    sampler = AspectRatioBatchSampler(sampler=RandomSampler(dataset), dataset=dataset, batch_size=bs, aspect_ratios=dataset.aspect_ratio, ratio_nums=dataset.ratio_nums)
+    sampler = AspectRatioBatchSampler(sampler=RandomSampler(dataset), dataset=dataset, batch_size=batch_size, aspect_ratios=dataset.aspect_ratio, ratio_nums=dataset.ratio_nums)
 
     # create DataLoader
     dataloader = DataLoader(dataset, batch_sampler=sampler, num_workers=13, pin_memory=True)
@@ -327,6 +266,7 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--multi_scale", action='store_true', default=False, help="multi-scale feature extraction")
     parser.add_argument("--img_size", default=512, type=int, choices=[256, 512, 1024], help="image scale for multi-scale feature extraction")
+    parser.add_argument('--vae_batch_size', default=1, type=int)
     parser.add_argument('--t5_max_token_length', default=120, type=int)
     parser.add_argument('--start_index', default=0, type=int)
     parser.add_argument('--end_index', default=1000000, type=int)
@@ -358,6 +298,7 @@ if __name__ == '__main__':
     json_file = args.json_file
     t5_max_token_length = args.t5_max_token_length
     dataset_root = args.dataset_root
+    vae_batch_size = args.vae_batch_size
 
     start_index = args.start_index
     end_index = args.end_index
@@ -370,7 +311,11 @@ if __name__ == '__main__':
     if not args.skip_vae:
         # prepare extracted image vae features for training
         logger.info(f"Extracting VAE features for {json_path}\nmulti_scale: {multi_scale}\nimage_resize: {image_resize}\nDevice: {device}\nSave to: {vae_save_root}")
-        if multi_scale:
-            extract_img_vae_multiscale(bs=1)    # recommend bs = 1 for AspectRatioBatchSampler
-        else:
-            extract_img_vae()
+        if not multi_scale:
+            # basically seemed like the two did the same thing except one code path was shittier
+            # and the non-multi-scale cropped to square instead of looking for nearest aspect ratio
+            logger.warning('Single scale feature extraction is not supported currently.')
+
+        # recommend bs = 1 for AspectRatioBatchSampler
+        # not sure why bs = 1 is recommended. bigger batches are used in training. try higher.
+        extract_img_vae_multiscale(batch_size=vae_batch_size)

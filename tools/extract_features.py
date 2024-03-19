@@ -19,20 +19,26 @@ from torchvision.transforms.functional import InterpolationMode
 from torchvision.datasets.folder import default_loader
 
 from diffusion.model.t5 import T5Embedder
+from diffusion.utils.logger import get_logger
 from diffusers.models import AutoencoderKL
 from diffusion.data.datasets.InternalData import InternalData
 from diffusion.utils.misc import SimpleTimer
 from diffusion.utils.data_sampler import AspectRatioBatchSampler
 from diffusion.data.builder import DATASETS
-from diffusion.data import ASPECT_RATIO_512, ASPECT_RATIO_1024
+from diffusion.data import ASPECT_RATIO_512, ASPECT_RATIO_1024, ASPECT_RATIO_256
 from diffusion.data.datasets.utils import get_vae_feature_path, get_t5_feature_path
 
+logger = get_logger(__name__)
 
 def get_closest_ratio(height: float, width: float, ratios: dict):
     aspect_ratio = height / width
     closest_ratio = min(ratios.keys(), key=lambda ratio: abs(float(ratio) - aspect_ratio))
     return ratios[closest_ratio], float(closest_ratio)
 
+def get_vae_signature(resolution, is_multiscale):
+    assert resolution in [256, 512, 1024]
+    first_part = 'multiscale' if is_multiscale else 'cropped'
+    return f"{first_part}-{resolution}"
 @DATASETS.register_module()
 class DatasetMS(InternalData):
     def __init__(self, root, image_list_json=None, transform=None, resolution=1024, load_vae_feat=False, aspect_ratio_type=None, start_index=0, end_index=100000000, **kwargs):
@@ -49,7 +55,7 @@ class DatasetMS(InternalData):
         self.img_samples = []
         self.txt_feat_samples = []
         self.aspect_ratio = aspect_ratio_type
-        assert self.aspect_ratio in [ASPECT_RATIO_1024, ASPECT_RATIO_512]
+        assert self.aspect_ratio in [ASPECT_RATIO_1024, ASPECT_RATIO_512, ASPECT_RATIO_256]
         self.ratio_index = {}
         self.ratio_nums = {}
         for k, v in self.aspect_ratio.items():
@@ -63,7 +69,12 @@ class DatasetMS(InternalData):
             for item in meta_data:
                 if item['ratio'] <= 4:
                     sample_path = os.path.join(self.root.replace(self.json_dir_name, self.img_dir_name), item['path'])
-                    output_file_path = get_vae_feature_path(vae_save_root=work_dir, image_path=sample_path, signature='ms')
+                    # this dataset seems to be for multiscale vae extraction only
+                    signature = get_vae_signature(resolution=self.resolution, is_multiscale=True)
+                    output_file_path = get_vae_feature_path(
+                        vae_save_root=vae_save_root, 
+                        image_path=sample_path, 
+                        signature=signature)
                     if not os.path.exists(output_file_path):
                         self.meta_data_clean.append(item)
                         self.img_samples.append(sample_path)
@@ -161,17 +172,19 @@ def extract_caption_t5():
     global t5
     global t5_save_dir
     global mutex
+    global json_path
+    global t5_max_token_length
 
     os.makedirs(t5_save_dir, exist_ok=True)
 
-    train_data_json = json.load(open(args.json_path, 'r'))
+    train_data_json = json.load(open(json_path, 'r'))
     train_data = train_data_json[args.start_index: args.end_index]
 
     completed_paths = set([item['path'] for item in train_data if os.path.exists(get_t5_feature_path(t5_save_dir=t5_save_dir, image_path=item['path']))])
     print(f"Skipping t5 extraction for {len(completed_paths)} items with existing .npz files.")
 
     # global images_extension
-    t5 = T5Embedder(device="cuda", local_cache=True, cache_dir=f'{args.pretrained_models_dir}/t5_ckpts', model_max_length=120)
+    t5 = T5Embedder(device=device, local_cache=True, cache_dir=f'{args.pretrained_models_dir}/t5_ckpts', model_max_length=t5_max_token_length)
     
     mutex = threading.Lock()
     jobs = Queue()
@@ -205,7 +218,6 @@ def extract_img_vae():
     train_data_json = json.load(open(args.json_path, 'r'))
     image_names = set()
 
-    vae_save_root = f'{args.vae_save_root}/{image_resize}resolution'
     os.umask(0o000)  # file permission: 666; dir permission: 777
     os.makedirs(vae_save_root, exist_ok=True)
 
@@ -232,11 +244,17 @@ def extract_img_vae():
 
     os.umask(0o000)  # file permission: 666; dir permission: 777
     for image_name in tqdm(lines):
-        save_path = os.path.join(vae_save_dir, Path(image_name).stem)
-        if os.path.exists(f"{save_path}.npy"):
+        signature = get_vae_signature(resolution=image_resize, is_multiscale=False)
+        save_path = get_vae_feature_path(
+            vae_save_root=vae_save_root, 
+            image_path=args.json_path, 
+            signature=signature,
+            )
+        
+        if os.path.exists(save_path):
             continue
         try:
-            img = Image.open(f'{args.dataset_root}/{image_name}')
+            img = Image.open(f'{dataset_root}/{image_name}')
             img = transform(img).to(device)[None]
 
             with torch.no_grad():
@@ -249,13 +267,13 @@ def extract_img_vae():
             print(image_name)
 
 
-def save_results(results, paths, signature, work_dir):
+def save_results(results, paths, signature, vae_save_root):
     timer = SimpleTimer(len(results), log_interval=100, desc="Saving Results")
     # save to npy
     new_paths = []
     os.umask(0o000)  # file permission: 666; dir permission: 777
     for res, p in zip(results, paths):
-        output_path = get_vae_feature_path(vae_save_root=work_dir, 
+        output_path = get_vae_feature_path(vae_save_root=vae_save_root, 
                              image_path=p, 
                              signature=signature)
         dirname_base = os.path.basename(os.path.dirname(output_path))
@@ -264,11 +282,11 @@ def save_results(results, paths, signature, work_dir):
         np.save(output_path, res)
         timer.log()
     # save paths
-    with open(os.path.join(work_dir, f"VAE-{signature}.txt"), 'a') as f:
+    with open(os.path.join(vae_save_root, f"VAE-{signature}.txt"), 'a') as f:
         f.write('\n'.join(new_paths) + '\n')
 
 
-def inference(vae, dataloader, signature, work_dir):
+def inference(vae, dataloader, signature, vae_save_root):
     timer = SimpleTimer(len(dataloader), log_interval=100, desc="VAE-Inference")
 
     for batch in dataloader:
@@ -277,22 +295,26 @@ def inference(vae, dataloader, signature, work_dir):
                 posterior = vae.encode(batch[0]).latent_dist
                 results = torch.cat([posterior.mean, posterior.std], dim=1).detach().cpu().numpy()
         path = batch[1]
-        save_results(results, path, signature=signature, work_dir=work_dir)
+        save_results(results, path, signature=signature, vae_save_root=vae_save_root)
         timer.log()
 
 
 def extract_img_vae_multiscale(bs=1):
-    assert image_resize in [512, 1024]
+    assert image_resize in [256, 512, 1024]
     os.umask(0o000)  # file permission: 666; dir permission: 777
-    os.makedirs(work_dir, exist_ok=True)
+    os.makedirs(vae_save_root, exist_ok=True)
     accelerator = Accelerator(mixed_precision='fp16')
     vae = AutoencoderKL.from_pretrained(f'{args.pretrained_models_dir}/sd-vae-ft-ema').to(device)
 
-    signature = 'ms'
-
-    aspect_ratio_type = ASPECT_RATIO_1024 if image_resize == 1024 else ASPECT_RATIO_512
-    dataset = DatasetMS(args.dataset_root, image_list_json=[args.json_file], transform=None, sample_subset=None,
-                        aspect_ratio_type=aspect_ratio_type, start_index=args.start_index, end_index=args.end_index)
+    signature = get_vae_signature(resolution=image_resize, is_multiscale=True)
+    
+    aspect_ratio_type = {
+        256: ASPECT_RATIO_256,
+        512: ASPECT_RATIO_512,
+        1024: ASPECT_RATIO_1024
+    }[image_resize]
+    dataset = DatasetMS(dataset_root, image_list_json=[json_file], transform=None, sample_subset=None,
+                        aspect_ratio_type=aspect_ratio_type, start_index=start_index, end_index=end_index)
 
     # create AspectRatioBatchSampler
     sampler = AspectRatioBatchSampler(sampler=RandomSampler(dataset), dataset=dataset, batch_size=bs, aspect_ratios=dataset.aspect_ratio, ratio_nums=dataset.ratio_nums)
@@ -301,16 +323,16 @@ def extract_img_vae_multiscale(bs=1):
     dataloader = DataLoader(dataset, batch_sampler=sampler, num_workers=13, pin_memory=True)
     dataloader = accelerator.prepare(dataloader, )
 
-    inference(vae, dataloader, signature=signature, work_dir=work_dir)
+    inference(vae, dataloader, signature=signature, vae_save_root=vae_save_root)
     accelerator.wait_for_everyone()
-
-    print('done')
+    logger.info('finished extract_img_vae_multiscale')
 
 
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--multi_scale", action='store_true', default=False, help="multi-scale feature extraction")
-    parser.add_argument("--img_size", default=512, type=int, help="image scale for multi-scale feature extraction")
+    parser.add_argument("--img_size", default=512, type=int, choices=[256, 512, 1024], help="image scale for multi-scale feature extraction")
+    parser.add_argument('--t5_max_token_length', default=120, type=int)
     parser.add_argument('--start_index', default=0, type=int)
     parser.add_argument('--end_index', default=1000000, type=int)
     
@@ -333,11 +355,20 @@ if __name__ == '__main__':
     args = get_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     image_resize = args.img_size
-    work_dir = os.path.abspath(args.vae_save_root)
+    vae_save_root = os.path.abspath(args.vae_save_root)
     t5_save_dir = args.t5_save_root
+    json_path = args.json_path
+    # not sure about the difference between json_file and json_path
+    json_file = args.json_file
+    t5_max_token_length = args.t5_max_token_length
+    dataset_root = args.dataset_root
+
+    start_index = args.start_index
+    end_index = args.end_index
 
     if not args.skip_t5:
         # prepare extracted caption t5 features for training
+        logger.info(f"Extracting T5 features for {json_path}\nDevice: {device}\nSave to: {t5_save_dir}")
         extract_caption_t5()
 
     if not args.skip_vae:

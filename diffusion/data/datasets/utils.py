@@ -86,14 +86,22 @@ def get_chunks(lst, n):
 
 def get_vae_feature_path(vae_save_root, image_path, signature):
     if signature:
-        root_dir = f"{vae_save_root}/{signature}"
+        root_dir = os.path.join(vae_save_root, signature)
     else:
         root_dir = vae_save_root
 
-    return get_feature_path(root_dir, image_path, '.npy')
+    return get_feature_path(
+        root_dir=root_dir, 
+        image_path=image_path,
+        extension='.npy')
 
-def get_t5_feature_path(t5_save_dir, image_path):
-    return get_feature_path(t5_save_dir, image_path, '.npz')
+def get_t5_feature_path(t5_save_dir, image_path, max_token_length=120):
+    root_dir = os.path.join(t5_save_dir, f"{max_token_length}")
+    return get_feature_path(
+                root_dir=root_dir, 
+                image_path=image_path, 
+                extension='.npz',
+            )
 
 def get_feature_path(root_dir, image_path, extension):
     safe_name = image_path.replace('/', '---').replace('\\', '---')

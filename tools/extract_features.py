@@ -233,7 +233,7 @@ def save_results(results, paths, signature, vae_save_root):
 
 
 def inference(vae, dataloader, signature, vae_save_root):
-    timer = SimpleTimer(len(dataloader), log_interval=5000, desc="VAE-Inference")
+    timer = SimpleTimer(len(dataloader), log_interval=1, desc="VAE-Inference")
 
     for batch in dataloader:
         with torch.no_grad():

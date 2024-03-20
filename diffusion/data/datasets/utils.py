@@ -84,30 +84,43 @@ def get_chunks(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
 
-def get_vae_feature_path(vae_save_root, image_path, signature):
+def get_vae_feature_path(vae_save_root, image_path, relative_root_dir, signature):
     if signature:
         root_dir = os.path.join(vae_save_root, signature)
     else:
         root_dir = vae_save_root
 
     return get_feature_path(
-        root_dir=root_dir, 
+        feature_dir=root_dir, 
         image_path=image_path,
+        relative_root_dir=relative_root_dir,
         extension='.npy')
 
-def get_t5_feature_path(t5_save_dir, image_path, max_token_length=120):
+def get_t5_feature_path(t5_save_dir, image_path, relative_root_dir, max_token_length=120):
     root_dir = os.path.join(t5_save_dir, f"{max_token_length}")
     return get_feature_path(
-                root_dir=root_dir, 
-                image_path=image_path, 
+                feature_dir=root_dir, 
+                image_path=image_path,
+                relative_root_dir=relative_root_dir,
                 extension='.npz',
             )
 
-def get_feature_path(root_dir, image_path, extension):
+def get_feature_path(feature_dir, image_path, extension, relative_root_dir):
+    """
+    Returns full feature path in feature_dir, first creating safe filename from image_path, relative to relative_root_dir
+    """
+    absolute_image_path = os.path.abspath(image_path)
+    absolute_root_dir = os.path.abspath(relative_root_dir)
+    # Check if the root dir is part of the image path
+    common_path = os.path.commonpath([absolute_image_path, absolute_root_dir])
+    if common_path == absolute_root_dir:
+        # Make the image path relative to the root dir
+        image_path = os.path.relpath(absolute_image_path, absolute_root_dir)
+    
     safe_name = image_path.replace('/', '---').replace('\\', '---')
     safe_name_no_ext = safe_name.rsplit('.', 1)[0]  # Remove the original extension
     if not extension.startswith('.'):
         extension = '.' + extension
     # Return the transformed path as a safe filename with the new extension
-    return os.path.join(root_dir, safe_name_no_ext + extension)
+    return os.path.join(feature_dir, safe_name_no_ext + extension)
     

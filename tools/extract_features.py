@@ -41,16 +41,13 @@ def get_vae_signature(resolution, is_multiscale):
     return f"{first_part}-{resolution}"
 @DATASETS.register_module()
 class DatasetMS(InternalData):
-    def __init__(self, root, image_list_json=None, transform=None, resolution=1024, load_vae_feat=False, aspect_ratio_type=None, start_index=0, end_index=100000000, **kwargs):
+    def __init__(self, root, image_list_json=None, transform=None, load_vae_feat=False, aspect_ratio_type=None, start_index=0, end_index=100000000, **kwargs):
         if image_list_json is None:
             image_list_json = ['data_info.json']
         assert os.path.isabs(root), 'root must be a absolute path'
         self.root = root
-        self.img_dir_name = 'InternalImgs'        # need to change to according to your data structure
-        self.json_dir_name = 'InternalData'        # need to change to according to your data structure
         self.transform = transform
         self.load_vae_feat = load_vae_feat
-        self.resolution = resolution
         self.meta_data_clean = []
         self.img_samples = []
         self.txt_feat_samples = []
@@ -66,15 +63,18 @@ class DatasetMS(InternalData):
         image_list_json = image_list_json if isinstance(image_list_json, list) else [image_list_json]
         for json_file in image_list_json:
             meta_data = self.load_json(os.path.join(self.root, 'partition', json_file))
+            logger.info(f'json_file: {json_file} has {len(meta_data)} meta_data')
             for item in meta_data:
                 if item['ratio'] <= 4:
-                    sample_path = os.path.join(self.root.replace(self.json_dir_name, self.img_dir_name), item['path'])
+                    sample_path = os.path.join(self.root, item['path'])
                     # this dataset seems to be for multiscale vae extraction only
-                    signature = get_vae_signature(resolution=self.resolution, is_multiscale=True)
+                    signature = get_vae_signature(resolution=image_resize, is_multiscale=True)
                     output_file_path = get_vae_feature_path(
                         vae_save_root=vae_save_root, 
-                        image_path=sample_path, 
-                        signature=signature)
+                        image_path=sample_path,
+                        signature=signature,
+                        relative_root_dir=self.root,
+                        )
                     if not os.path.exists(output_file_path):
                         self.meta_data_clean.append(item)
                         self.img_samples.append(sample_path)
@@ -150,7 +150,11 @@ def extract_caption_t5_job(item):
         if isinstance(caption, str):
             caption = [caption]
 
-        output_path = get_t5_feature_path(t5_save_dir=t5_save_dir, image_path=item['path'])
+        output_path = get_t5_feature_path(
+            t5_save_dir=t5_save_dir, 
+            image_path=item['path'],
+            relative_root_dir=dataset_root,
+            )
         
         if os.path.exists(output_path):
             return
@@ -180,7 +184,11 @@ def extract_caption_t5():
     train_data_json = json.load(open(json_path, 'r'))
     train_data = train_data_json[args.start_index: args.end_index]
 
-    completed_paths = set([item['path'] for item in train_data if os.path.exists(get_t5_feature_path(t5_save_dir=t5_save_dir, image_path=item['path']))])
+    completed_paths = set([item['path'] for item in train_data if os.path.exists(get_t5_feature_path(
+        t5_save_dir=t5_save_dir, 
+        image_path=item['path'],
+        relative_root_dir=dataset_root,
+        ))])
     print(f"Skipping t5 extraction for {len(completed_paths)} items with existing .npz files.")
 
     # global images_extension
@@ -206,9 +214,12 @@ def save_results(results, paths, signature, vae_save_root):
     new_paths = []
     os.umask(0o000)  # file permission: 666; dir permission: 777
     for res, p in zip(results, paths):
-        output_path = get_vae_feature_path(vae_save_root=vae_save_root, 
-                             image_path=p, 
-                             signature=signature)
+        output_path = get_vae_feature_path(
+            vae_save_root=vae_save_root, 
+            image_path=p, 
+            signature=signature,
+            relative_root_dir=dataset_root,
+            )
         dirname = os.path.dirname(output_path)
         if not os.path.exists(dirname):
             os.makedirs(dirname, exist_ok=True)
@@ -249,7 +260,7 @@ def extract_img_vae_multiscale(batch_size=1):
         1024: ASPECT_RATIO_1024
     }[image_resize]
     dataset = DatasetMS(dataset_root, image_list_json=[json_file], transform=None, sample_subset=None,
-                        aspect_ratio_type=aspect_ratio_type, start_index=start_index, end_index=end_index)
+                        aspect_ratio_type=aspect_ratio_type, start_index=start_index, end_index=end_index,)
 
     # create AspectRatioBatchSampler
     sampler = AspectRatioBatchSampler(sampler=RandomSampler(dataset), dataset=dataset, batch_size=batch_size, aspect_ratios=dataset.aspect_ratio, ratio_nums=dataset.ratio_nums)
@@ -272,7 +283,6 @@ def get_args():
     parser.add_argument('--start_index', default=0, type=int)
     parser.add_argument('--end_index', default=1000000, type=int)
     
-    parser.add_argument('--json_path', type=str)
     parser.add_argument('--t5_save_root', default='data/data_toy/caption_feature_wmask', type=str)
     parser.add_argument('--vae_save_root', default='data/data_toy/img_vae_features', type=str)
     parser.add_argument('--dataset_root', default='data/data_toy', type=str)
@@ -294,9 +304,9 @@ if __name__ == '__main__':
     multi_scale = args.multi_scale
     vae_save_root = os.path.abspath(args.vae_save_root)
     t5_save_dir = args.t5_save_root
-    json_path = args.json_path
-    # not sure about the difference between json_file and json_path
+    
     json_file = args.json_file
+    json_path = json_file # pretty sure this is just duplicate. can clean this up later
     t5_max_token_length = args.t5_max_token_length
     dataset_root = args.dataset_root
     vae_batch_size = args.vae_batch_size

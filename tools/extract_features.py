@@ -182,15 +182,17 @@ def extract_caption_t5_batch(batch):
     global mutex
     global t5
     global t5_save_dir
-
+    logger.info(f"extract_caption_t5_batch batch: {batch}")
     with torch.no_grad():
         captions = [item['prompt'].strip() for item in batch]
+        logger.info(f"captions: {captions}")
         output_paths = [get_t5_feature_path(
             t5_save_dir=t5_save_dir, 
             image_path=item['path'],
             relative_root_dir=dataset_root,
             max_token_length=t5_max_token_length,
         ) for item in batch]
+        logger.info(f"output_paths: {output_paths}")
 
         # Create output directories if they don't exist
         for output_path in output_paths:
@@ -201,6 +203,9 @@ def extract_caption_t5_batch(batch):
         try:
             mutex.acquire()
             caption_embs, emb_masks = t5.get_text_embeddings(captions)
+            logger.info(f"finished t5.get_text_embeddings()")
+            logger.info(f"caption_embs: {caption_embs}")
+            logger.info(f"emb_masks: {emb_masks}")
             mutex.release()
 
             for i, output_path in enumerate(output_paths):
@@ -208,9 +213,10 @@ def extract_caption_t5_batch(batch):
                     'caption_feature': caption_embs[i].float().cpu().data.numpy(),
                     'attention_mask': emb_masks[i].cpu().data.numpy(),
                 }
+                logger.info(f"saving emb_dict {emb_dict} \nto {output_path}")
                 np.savez_compressed(output_path, **emb_dict)
         except Exception as e:
-            print(e)
+            logger.exception(e)
 
 def extract_caption_t5(t5_batch_size):
     global t5
@@ -245,33 +251,9 @@ def extract_caption_t5(t5_batch_size):
     batch_size = t5_batch_size
     batches = [train_data[i:i+batch_size] for i in range(0, len(train_data), batch_size)]
 
-    # threads = []
-    # for batch in batches:
-    #     thread = threading.Thread(target=extract_caption_t5_batch, args=(batch,))
-    #     thread.start()
-    #     threads.append(thread)
-
-    # for thread in threads:
-    #     thread.join()
-
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(extract_caption_t5_batch, batch) for batch in batches]
         concurrent.futures.wait(futures)
-
-
-    # jobs = Queue()
-
-    # for item in tqdm(train_data):
-    #     if item['path'] not in completed_paths:
-    #         jobs.put(item)
-    #         # remove later
-    #         print(f"Adding {item['path']} to queue")
-
-    # for _ in range(20):
-    #     worker = threading.Thread(target=extract_caption_t5_do, args=(jobs,))
-    #     worker.start()
-
-    # jobs.join()
 
 def save_results(results, paths, signature, vae_save_root):
     # save to npy

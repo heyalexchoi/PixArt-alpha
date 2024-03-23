@@ -375,12 +375,15 @@ if __name__ == '__main__':
 
     if not args.skip_t5:
         # prepare extracted caption t5 features for training
-        logger.info(f"Extracting T5 features for {json_path}\nMax token length: {t5_max_token_length}\nDevice: {device}\nSave to: {t5_save_dir}")
+        logger.info(f"Extracting T5 features for {json_path}\nMax token length: {t5_max_token_length}\
+                    \nDevice: {device}\nBatch size: {t5_batch_size}\nSave to: {t5_save_dir}")
         extract_caption_t5(t5_batch_size=t5_batch_size)
 
     if not args.skip_vae:
         # prepare extracted image vae features for training
-        logger.info(f"Extracting VAE features for {json_path}\nmulti_scale: {multi_scale}\nimage_resize: {image_resize}\nDevice: {device}\nSave to: {vae_save_root}")
+        logger.info(f"Extracting VAE features for {json_path}\nmulti_scale: {multi_scale}\
+                    \nimage_resize: {image_resize}\nDevice: {device}\nBatch Size: {vae_batch_size}\
+                    \nSave to: {vae_save_root}")
         if not multi_scale:
             # basically seemed like the two did the same thing except one code path was shittier
             # and the non-multi-scale cropped to square instead of looking for nearest aspect ratio

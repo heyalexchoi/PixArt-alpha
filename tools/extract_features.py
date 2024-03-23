@@ -39,6 +39,7 @@ def get_vae_signature(resolution, is_multiscale):
     assert resolution in [256, 512, 1024]
     first_part = 'multiscale' if is_multiscale else 'cropped'
     return f"{first_part}-{resolution}"
+
 @DATASETS.register_module()
 class DatasetMS(InternalData):
     def __init__(self, root, image_list_json=None, transform=None, load_vae_feat=False, aspect_ratio_type=None, start_index=0, end_index=100000000, **kwargs):
@@ -154,6 +155,7 @@ def extract_caption_t5_job(item):
             t5_save_dir=t5_save_dir, 
             image_path=item['path'],
             relative_root_dir=dataset_root,
+            max_token_length=t5_max_token_length,
             )
         
         if os.path.exists(output_path):
@@ -188,11 +190,17 @@ def extract_caption_t5():
         t5_save_dir=t5_save_dir, 
         image_path=item['path'],
         relative_root_dir=dataset_root,
+        max_token_length=t5_max_token_length,
         ))])
     print(f"Skipping t5 extraction for {len(completed_paths)} items with existing .npz files.")
 
     # global images_extension
-    t5 = T5Embedder(device=device, local_cache=True, cache_dir=f'{args.pretrained_models_dir}/t5_ckpts', model_max_length=t5_max_token_length)
+    t5 = T5Embedder(
+        device=device, 
+        local_cache=True, 
+        cache_dir=f'{args.pretrained_models_dir}/t5_ckpts', 
+        model_max_length=t5_max_token_length
+        )
     
     mutex = threading.Lock()
     jobs = Queue()
@@ -316,7 +324,7 @@ if __name__ == '__main__':
 
     if not args.skip_t5:
         # prepare extracted caption t5 features for training
-        logger.info(f"Extracting T5 features for {json_path}\nDevice: {device}\nSave to: {t5_save_dir}")
+        logger.info(f"Extracting T5 features for {json_path}\nMax token length: {t5_max_token_length}\nDevice: {device}\nSave to: {t5_save_dir}")
         extract_caption_t5()
 
     if not args.skip_vae:

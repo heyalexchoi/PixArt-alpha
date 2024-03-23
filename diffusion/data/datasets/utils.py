@@ -97,7 +97,8 @@ def get_vae_feature_path(vae_save_root, image_path, relative_root_dir, signature
         extension='.npy')
 
 def get_t5_feature_path(t5_save_dir, image_path, relative_root_dir, max_token_length=120):
-    root_dir = os.path.join(t5_save_dir, f"{max_token_length}")
+    signature = f"max-{max_token_length}"
+    root_dir = os.path.join(t5_save_dir, signature)
     return get_feature_path(
                 feature_dir=root_dir, 
                 image_path=image_path,

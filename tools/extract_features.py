@@ -158,6 +158,10 @@ def extract_caption_t5_job(item):
             max_token_length=t5_max_token_length,
             )
         
+        output_dir = os.path.dirname(output_path)
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+        
         if os.path.exists(output_path):
             return
 

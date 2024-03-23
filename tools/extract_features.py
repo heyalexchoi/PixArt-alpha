@@ -134,50 +134,6 @@ class DatasetMS(InternalData):
         data_info = self.meta_data_clean[idx]
         return {'height': data_info['height'], 'width': data_info['width']}
 
-
-# def extract_caption_t5_do(q):
-#     while not q.empty():
-#         item = q.get()
-#         extract_caption_t5_job(item)
-#         q.task_done()
-
-
-# def extract_caption_t5_job(item):
-#     global mutex
-#     global t5
-#     global t5_save_dir
-
-#     with torch.no_grad():
-#         caption = item['prompt'].strip()
-#         if isinstance(caption, str):
-#             caption = [caption]
-
-#         output_path = get_t5_feature_path(
-#             t5_save_dir=t5_save_dir, 
-#             image_path=item['path'],
-#             relative_root_dir=dataset_root,
-#             max_token_length=t5_max_token_length,
-#             )
-        
-#         output_dir = os.path.dirname(output_path)
-#         if not os.path.exists(output_dir):
-#             os.makedirs(output_dir, exist_ok=True)
-        
-#         if os.path.exists(output_path):
-#             return
-
-#         try:
-#             mutex.acquire()
-#             caption_emb, emb_mask = t5.get_text_embeddings(caption)
-#             mutex.release()
-#             emb_dict = {
-#                 'caption_feature': caption_emb.float().cpu().data.numpy(),
-#                 'attention_mask': emb_mask.cpu().data.numpy(),
-#             }
-#             np.savez_compressed(output_path, **emb_dict)
-#         except Exception as e:
-#             print(e)
-
 def extract_caption_t5_batch(batch):
     global mutex
     global t5
@@ -246,16 +202,15 @@ def extract_caption_t5(t5_batch_size):
     batches = [train_data[i:i+batch_size] for i in range(0, len(train_data), batch_size)]
     logger.info(f'Enqueuing t5 extraction for {len(batches)} batches of batch_size {batch_size}')
 
-    # with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-    #     futures = [executor.submit(extract_caption_t5_batch, batch) for batch in batches]
-    #     concurrent.futures.wait(futures)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(extract_caption_t5_batch, batch) for batch in batches]
-        
+        futures = []
         with tqdm(total=len(batches), unit='batch') as progress_bar:
-            for future in concurrent.futures.as_completed(futures):
-                future.result()  # Wait for each future to complete and retrieve the result
-                progress_bar.update(1)  # Update the progress bar for each completed batch
+            for batch in batches:
+                future = executor.submit(extract_caption_t5_batch, batch)
+                future.add_done_callback(lambda _: progress_bar.update(1))
+                futures.append(future)
+
+        concurrent.futures.wait(futures)
 
 def save_results(results, paths, signature, vae_save_root):
     # save to npy

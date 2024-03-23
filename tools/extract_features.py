@@ -164,7 +164,9 @@ def extract_caption_t5_batch(batch):
                     'attention_mask': emb_masks[i].cpu().data.numpy(),
                 }
                 np.savez_compressed(output_path, **emb_dict)
+            logger.info(f"Completed T5 batch of length {len(batch)}")
         except Exception as e:
+            mutex.release()
             logger.exception(e)
 
 def extract_caption_t5(t5_batch_size):

@@ -263,12 +263,12 @@ def extract_caption_t5(
     writer = SummaryWriter('runs/ffhq-profile')
     #
     # for i in tqdm(range(len(batches)), desc="Processing Batches"):
-    for i in tqdm(range(3), desc="Processing Batches"):
+    for i in tqdm(range(1), desc="Processing Batches"):
         batch = batches[i]
 
         with torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-            schedule=torch.profiler.schedule(wait=1, warmup=1, active=3),
+            schedule=torch.profiler.schedule(wait=0, warmup=0, active=1),
             on_trace_ready=torch.profiler.tensorboard_trace_handler(writer.log_dir),
             record_shapes=True,
             profile_memory=True,

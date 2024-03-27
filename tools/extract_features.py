@@ -298,7 +298,7 @@ def get_args():
     parser.add_argument('--vae_save_root', default='data/data_toy/img_vae_features', type=str)
     parser.add_argument('--dataset_root', default='data/data_toy', type=str)
     parser.add_argument('--pretrained_models_dir', default='output/pretrained_models', type=str)
-    parser.add_argument('--max_workers', default=8, help="Maximum workers")
+    parser.add_argument('--max_workers', default=8, type=int, help="Maximum workers")
 
     parser.add_argument('--skip_t5', action='store_true', default=False, help="skip t5 feature extraction")
     parser.add_argument('--skip_vae', action='store_true', default=False, help="skip vae feature extraction")

@@ -312,7 +312,14 @@ if __name__ == '__main__':
         logger.info(f"Extracting T5 features for {json_path}\nMax token length: {t5_max_token_length}\
                     \nDevice: {device}\nBatch size: {t5_batch_size}\nMax Workers: {max_workers}\
                     \nSave to: {t5_save_dir}")
-        extract_caption_t5(t5_batch_size=t5_batch_size)
+        extract_caption_t5(
+            t5_batch_size=t5_batch_size,
+            device=device,
+            t5_save_dir=t5_save_dir,
+            json_path=json_path,
+            t5_max_token_length=t5_max_token_length,
+            dataset_root=dataset_root,
+        )
 
     if not args.skip_vae:
         # prepare extracted image vae features for training

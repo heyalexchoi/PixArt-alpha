@@ -279,9 +279,7 @@ def extract_caption_t5(
     return all_save_futures
 
 def save_emb_dict(output_path, emb_dict):
-    # logger.info(f'extract_caption_t5_batch np.savez_compressed start') #
     np.savez_compressed(output_path, **emb_dict)
-    # logger.info(f'extract_caption_t5_batch np.savez_compressed finished') #
 
 def async_save_embedding(output_path, emb_dict):
     future = executor.submit(save_emb_dict, output_path, emb_dict)

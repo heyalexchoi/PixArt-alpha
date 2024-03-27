@@ -213,31 +213,25 @@ def extract_caption_t5_batch(batch, t5, t5_save_dir, t5_max_token_length, datase
             relative_root_dir=dataset_root,
             max_token_length=t5_max_token_length,
         ) for item in batch]
-        logger.info(f'extract_caption_t5_batch got output_paths') #
 
         for output_path in output_paths:
             output_dir = os.path.dirname(output_path)
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
-        logger.info(f'extract_caption_t5_batch get_text_embeddings') #
+
         caption_embs, emb_masks = t5.get_text_embeddings(captions)
-        logger.info(f'extract_caption_t5_batch get_text_embeddings finished') #
 
         save_futures = []
         for i, output_path in enumerate(output_paths):
-            logger.info(f'extract_caption_t5_batch start get emb_dict') #
             emb_dict = {
                 'caption_feature': caption_embs[i].float().cpu().data.numpy(),
                 'attention_mask': emb_masks[i].cpu().data.numpy(),
             }
-            logger.info(f'extract_caption_t5_batch np.savez_compressed start') #
-            # np.savez_compressed(output_path, **emb_dict)
             save_future = async_save_embedding(
                 output_path=output_path,
                 emb_dict=emb_dict,
             )
             save_futures.append(save_future)
-            logger.info(f'extract_caption_t5_batch np.savez_compressed finished') #
         logger.info(f"Completed T5 batch of length {len(batch)}")
         return save_futures
 

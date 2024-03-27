@@ -32,6 +32,8 @@ from diffusion.utils.dist_utils import flush
 
 import torch.profiler
 from torch.utils.tensorboard import SummaryWriter
+from concurrent.futures import ProcessPoolExecutor, wait, as_completed
+
 
 logger = get_logger(__name__)
 
@@ -223,6 +225,7 @@ def extract_caption_t5_batch(batch, t5, t5_save_dir, t5_max_token_length, datase
         caption_embs, emb_masks = t5.get_text_embeddings(captions)
         logger.info(f'extract_caption_t5_batch get_text_embeddings finished') #
 
+        save_futures = []
         for i, output_path in enumerate(output_paths):
             logger.info(f'extract_caption_t5_batch start get emb_dict') #
             emb_dict = {
@@ -230,9 +233,15 @@ def extract_caption_t5_batch(batch, t5, t5_save_dir, t5_max_token_length, datase
                 'attention_mask': emb_masks[i].cpu().data.numpy(),
             }
             logger.info(f'extract_caption_t5_batch np.savez_compressed start') #
-            np.savez_compressed(output_path, **emb_dict)
+            # np.savez_compressed(output_path, **emb_dict)
+            save_future = async_save_embedding(
+                output_path=output_path,
+                emb_dict=emb_dict,
+            )
+            save_futures.append(save_future)
             logger.info(f'extract_caption_t5_batch np.savez_compressed finished') #
         logger.info(f"Completed T5 batch of length {len(batch)}")
+        return save_futures
 
 def extract_caption_t5(
         t5_batch_size, 
@@ -253,6 +262,7 @@ def extract_caption_t5(
         relative_root_dir=dataset_root,
         max_token_length=t5_max_token_length,
     ))])
+    train_data = [item for item in train_data if item['path'] not in completed_paths]
     logger.info(f"Skipping T5 extraction for {len(completed_paths)} items with existing .npz files.")
     logger.info('Loading T5Embedder...')
     t5 = T5Embedder(
@@ -268,8 +278,10 @@ def extract_caption_t5(
     #
     writer = SummaryWriter('runs/ffhq-profile')
     #
+
+    all_save_futures = []
     # for i in tqdm(range(len(batches)), desc="Processing Batches"):
-    for i in tqdm(range(1), desc="Processing Batches"):
+    for i in tqdm(range(5), desc="Processing Batches"):
         batch = batches[i]
 
         with torch.profiler.profile(
@@ -280,17 +292,26 @@ def extract_caption_t5(
             profile_memory=True,
             with_stack=True  # Adds call stack information for more detailed analysis
         ) as prof:
-            
-            # Your model inference or training loop here
-            extract_caption_t5_batch(batch, t5, t5_save_dir, t5_max_token_length, dataset_root)
+            batch_save_futures = extract_caption_t5_batch(batch, t5, t5_save_dir, t5_max_token_length, dataset_root)
+            all_save_futures.extend(batch_save_futures)
             prof.step()  # Next profiling step
-        
+            
     #
     writer.close()
     #
     logger.info('finished extract_caption_t5. cleaning up...')
     del t5
     flush()
+    return all_save_futures
+
+def save_emb_dict(output_path, emb_dict):
+    # logger.info(f'extract_caption_t5_batch np.savez_compressed start') #
+    np.savez_compressed(output_path, **emb_dict)
+    # logger.info(f'extract_caption_t5_batch np.savez_compressed finished') #
+
+def async_save_embedding(output_path, emb_dict):
+    future = executor.submit(save_emb_dict, output_path, emb_dict)
+    return future
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -305,6 +326,7 @@ def get_args():
     parser.add_argument('--vae_save_root', default='data/data_toy/img_vae_features', type=str)
     parser.add_argument('--dataset_root', default='data/data_toy', type=str)
     parser.add_argument('--pretrained_models_dir', default='output/pretrained_models', type=str)
+    parser.add_argument('--max_workers', default=8, help="Maximum workers")
 
     parser.add_argument('--skip_t5', action='store_true', default=False, help="skip t5 feature extraction")
     parser.add_argument('--skip_vae', action='store_true', default=False, help="skip vae feature extraction")
@@ -329,16 +351,24 @@ if __name__ == '__main__':
     dataset_root = args.dataset_root
     vae_batch_size = args.vae_batch_size
     t5_batch_size = args.t5_batch_size
+    max_workers = args.max_workers
 
     start_index = args.start_index
     end_index = args.end_index
 
+    executor = ProcessPoolExecutor(max_workers=max_workers)
+    # disable warning from tokenizers. 
+    # parallelization here should all be downstream of tokenizers
+    # make sure not parallelizing any tokenization in my code.
+    os.environ["TOKENIZERS_PARALLELISM"] = "true"
+
     if not args.skip_t5:
         # prepare extracted caption t5 features for training
         logger.info(f"Extracting T5 features for {json_path}\nMax token length: {t5_max_token_length}\
-                    \nDevice: {device}\nBatch size: {t5_batch_size}\
+                    \nDevice: {device}\nBatch size: {t5_batch_size}\nMax Workers: {max_workers}\
                     \nSave to: {t5_save_dir}")
-        extract_caption_t5(
+        
+        t5_save_futures = extract_caption_t5(
             t5_batch_size=t5_batch_size,
             device=device,
             t5_save_dir=t5_save_dir,
@@ -360,3 +390,14 @@ if __name__ == '__main__':
         # recommend bs = 1 for AspectRatioBatchSampler
         # not sure why bs = 1 is recommended. bigger batches are used in training. try higher.
         extract_img_vae_multiscale(batch_size=vae_batch_size)
+    
+     # Use tqdm with as_completed to show progress
+    for future in tqdm(as_completed(t5_save_futures), total=len(t5_save_futures), desc="T5 Save Embeds"):
+        try:
+            result = future.result()
+            # Optionally process or log result here
+        except Exception as exc:
+            print(f"T5 Save Embedding Task generated an exception: {exc}")
+
+    # wait for all_save_futures 
+    done, not_done = wait(t5_save_futures)  # This will block until all futures are done

@@ -268,10 +268,8 @@ def extract_caption_t5(
     logger.info(f'Processing {len(batches)} batches of batch_size {batch_size}')
 
     all_save_futures = []
-    # for i in tqdm(range(len(batches)), desc="Processing Batches"):
-    for i in tqdm(range(5), desc="Processing Batches"):
+    for i in tqdm(range(len(batches)), desc="Processing Batches"):
         batch = batches[i]
-
         batch_save_futures = extract_caption_t5_batch(batch, t5, t5_save_dir, t5_max_token_length, dataset_root)
         all_save_futures.extend(batch_save_futures)            
 

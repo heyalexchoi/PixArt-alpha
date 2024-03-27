@@ -30,6 +30,9 @@ from diffusion.data import ASPECT_RATIO_512, ASPECT_RATIO_1024, ASPECT_RATIO_256
 from diffusion.data.datasets.utils import get_vae_feature_path, get_t5_feature_path
 from diffusion.utils.dist_utils import flush
 
+import torch.profiler
+from torch.utils.tensorboard import SummaryWriter
+
 logger = get_logger(__name__)
 
 def get_closest_ratio(height: float, width: float, ratios: dict):
@@ -214,7 +217,7 @@ def extract_caption_t5_batch(batch, t5, t5_save_dir, t5_max_token_length, datase
             output_dir = os.path.dirname(output_path)
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
-
+        
         caption_embs, emb_masks = t5.get_text_embeddings(captions)
 
         for i, output_path in enumerate(output_paths):
@@ -256,9 +259,29 @@ def extract_caption_t5(
     batches = [train_data[i:i + batch_size] for i in range(0, len(train_data), batch_size)]
     logger.info(f'Processing {len(batches)} batches of batch_size {batch_size}')
 
-    for i in tqdm(range(len(batches)), desc="Processing Batches"):
+    #
+    writer = SummaryWriter('runs/ffhq-profile')
+    #
+    # for i in tqdm(range(len(batches)), desc="Processing Batches"):
+    for i in tqdm(range(3), desc="Processing Batches"):
         batch = batches[i]
-        extract_caption_t5_batch(batch, t5, t5_save_dir, t5_max_token_length, dataset_root)
+
+        with torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            schedule=torch.profiler.schedule(wait=1, warmup=1, active=3),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(writer.log_dir),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True  # Adds call stack information for more detailed analysis
+        ) as prof:
+            
+            # Your model inference or training loop here
+            extract_caption_t5_batch(batch, t5, t5_save_dir, t5_max_token_length, dataset_root)
+            prof.step()  # Next profiling step
+        
+    #
+    writer.close()
+    #
     logger.info('finished extract_caption_t5. cleaning up...')
     del t5
     flush()

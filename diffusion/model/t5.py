@@ -10,6 +10,8 @@ from bs4 import BeautifulSoup
 from transformers import T5EncoderModel, AutoTokenizer
 from huggingface_hub import hf_hub_download
 
+import torch.profiler
+
 class T5Embedder:
 
     available_models = ['t5-v1_1-xxl']
@@ -104,6 +106,7 @@ class T5Embedder:
         text_tokens_and_mask['attention_mask'] = text_tokens_and_mask['attention_mask']
 
         with torch.no_grad():
+            # import pdb; pdb.set_trace()
             text_encoder_embs = self.model(
                 input_ids=text_tokens_and_mask['input_ids'].to(self.device),
                 attention_mask=text_tokens_and_mask['attention_mask'].to(self.device),

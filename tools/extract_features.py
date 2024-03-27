@@ -28,6 +28,7 @@ from diffusion.utils.data_sampler import AspectRatioBatchSampler
 from diffusion.data.builder import DATASETS
 from diffusion.data import ASPECT_RATIO_512, ASPECT_RATIO_1024, ASPECT_RATIO_256
 from diffusion.data.datasets.utils import get_vae_feature_path, get_t5_feature_path
+from diffusion.utils.dist_utils import flush
 
 logger = get_logger(__name__)
 
@@ -41,6 +42,7 @@ def get_vae_signature(resolution, is_multiscale):
     first_part = 'multiscale' if is_multiscale else 'cropped'
     return f"{first_part}-{resolution}"
 
+# VAE feature extraction
 @DATASETS.register_module()
 class DatasetMS(InternalData):
     def __init__(self, root, image_list_json=None, transform=None, load_vae_feat=False, aspect_ratio_type=None, start_index=0, end_index=100000000, **kwargs):
@@ -134,86 +136,6 @@ class DatasetMS(InternalData):
         data_info = self.meta_data_clean[idx]
         return {'height': data_info['height'], 'width': data_info['width']}
 
-def extract_caption_t5_batch(batch):
-    global mutex
-    global t5
-    global t5_save_dir
-    with torch.no_grad():
-        captions = [item['prompt'].strip() for item in batch]
-        output_paths = [get_t5_feature_path(
-            t5_save_dir=t5_save_dir, 
-            image_path=item['path'],
-            relative_root_dir=dataset_root,
-            max_token_length=t5_max_token_length,
-        ) for item in batch]
-
-        # Create output directories if they don't exist
-        for output_path in output_paths:
-            output_dir = os.path.dirname(output_path)
-            if not os.path.exists(output_dir):
-                os.makedirs(output_dir, exist_ok=True)
-
-        try:
-            mutex.acquire()
-            caption_embs, emb_masks = t5.get_text_embeddings(captions)
-            mutex.release()
-
-            for i, output_path in enumerate(output_paths):
-                emb_dict = {
-                    'caption_feature': caption_embs[i].float().cpu().data.numpy(),
-                    'attention_mask': emb_masks[i].cpu().data.numpy(),
-                }
-                np.savez_compressed(output_path, **emb_dict)
-            logger.info(f"Completed T5 batch of length {len(batch)}")
-        except Exception as e:
-            mutex.release()
-            logger.exception(e)
-
-def extract_caption_t5(t5_batch_size):
-    global t5
-    global t5_save_dir
-    global mutex
-    global json_path
-    global t5_max_token_length
-
-    os.makedirs(t5_save_dir, exist_ok=True)
-
-    train_data_json = json.load(open(json_path, 'r'))
-    train_data = train_data_json[args.start_index: args.end_index]
-
-    completed_paths = set([item['path'] for item in train_data if os.path.exists(get_t5_feature_path(
-        t5_save_dir=t5_save_dir, 
-        image_path=item['path'],
-        relative_root_dir=dataset_root,
-        max_token_length=t5_max_token_length,
-        ))])
-    logger.info(f"Skipping t5 extraction for {len(completed_paths)} items with existing .npz files.")
-
-    logger.info(f'Loading T5 with max token length: {t5_max_token_length} to device {device}')
-    # global images_extension
-    t5 = T5Embedder(
-        device=device, 
-        local_cache=True, 
-        cache_dir=f'{args.pretrained_models_dir}/t5_ckpts', 
-        model_max_length=t5_max_token_length
-        )
-    
-    mutex = threading.Lock()
-
-    batch_size = t5_batch_size
-    batches = [train_data[i:i+batch_size] for i in range(0, len(train_data), batch_size)]
-    logger.info(f'Enqueuing t5 extraction for {len(batches)} batches of batch_size {batch_size}')
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        with tqdm(total=len(batches), unit='batch') as progress_bar:
-            for batch in batches:
-                future = executor.submit(extract_caption_t5_batch, batch)
-                future.add_done_callback(lambda _: progress_bar.update(1))
-                futures.append(future)
-
-        concurrent.futures.wait(futures)
-
 def save_results(results, paths, signature, vae_save_root):
     # save to npy
     new_paths = []
@@ -235,7 +157,6 @@ def save_results(results, paths, signature, vae_save_root):
     # save paths
     with open(os.path.join(vae_save_root, f"VAE-{signature}.txt"), 'a') as f:
         f.write('\n'.join(new_paths) + '\n')
-
 
 def inference(vae, dataloader, signature, vae_save_root):
     timer = SimpleTimer(len(dataloader), log_interval=1, desc="VAE-Inference")
@@ -278,6 +199,69 @@ def extract_img_vae_multiscale(batch_size=1):
     accelerator.wait_for_everyone()
     logger.info('finished extract_img_vae_multiscale')
 
+# T5 feature extraction
+def extract_caption_t5_batch(batch, t5, t5_save_dir, t5_max_token_length, dataset_root):
+    with torch.no_grad():
+        captions = [item['prompt'].strip() for item in batch]
+        output_paths = [get_t5_feature_path(
+            t5_save_dir=t5_save_dir, 
+            image_path=item['path'],
+            relative_root_dir=dataset_root,
+            max_token_length=t5_max_token_length,
+        ) for item in batch]
+
+        for output_path in output_paths:
+            output_dir = os.path.dirname(output_path)
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+
+        caption_embs, emb_masks = t5.get_text_embeddings(captions)
+
+        for i, output_path in enumerate(output_paths):
+            emb_dict = {
+                'caption_feature': caption_embs[i].float().cpu().data.numpy(),
+                'attention_mask': emb_masks[i].cpu().data.numpy(),
+            }
+            np.savez_compressed(output_path, **emb_dict)
+        logger.info(f"Completed T5 batch of length {len(batch)}")
+
+def extract_caption_t5(
+        t5_batch_size, 
+        device, 
+        t5_save_dir, 
+        json_path, 
+        t5_max_token_length, 
+        dataset_root,
+        ):
+    os.makedirs(t5_save_dir, exist_ok=True)
+    train_data_json = json.load(open(json_path, 'r'))
+    # Assuming args.start_index and args.end_index are defined elsewhere
+    train_data = train_data_json[start_index:end_index]
+
+    completed_paths = set([item['path'] for item in train_data if os.path.exists(get_t5_feature_path(
+        t5_save_dir=t5_save_dir, 
+        image_path=item['path'],
+        relative_root_dir=dataset_root,
+        max_token_length=t5_max_token_length,
+    ))])
+    logger.info(f"Skipping T5 extraction for {len(completed_paths)} items with existing .npz files.")
+    logger.info('Loading T5Embedder...')
+    t5 = T5Embedder(
+            device=device, 
+            local_cache=True, 
+            cache_dir=f'{args.pretrained_models_dir}/t5_ckpts', 
+            model_max_length=t5_max_token_length
+            )
+    batch_size = t5_batch_size
+    batches = [train_data[i:i + batch_size] for i in range(0, len(train_data), batch_size)]
+    logger.info(f'Processing {len(batches)} batches of batch_size {batch_size}')
+
+    for i in tqdm(range(len(batches)), desc="Processing Batches"):
+        batch = batches[i]
+        extract_caption_t5_batch(batch, t5, t5_save_dir, t5_max_token_length, dataset_root)
+    logger.info('finished extract_caption_t5. cleaning up...')
+    del t5
+    flush()
 
 def get_args():
     parser = argparse.ArgumentParser()

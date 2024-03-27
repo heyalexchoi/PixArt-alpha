@@ -30,8 +30,6 @@ from diffusion.data import ASPECT_RATIO_512, ASPECT_RATIO_1024, ASPECT_RATIO_256
 from diffusion.data.datasets.utils import get_vae_feature_path, get_t5_feature_path
 from diffusion.utils.dist_utils import flush
 
-import torch.profiler
-from torch.utils.tensorboard import SummaryWriter
 from concurrent.futures import ProcessPoolExecutor, wait, as_completed
 
 
@@ -275,30 +273,14 @@ def extract_caption_t5(
     batches = [train_data[i:i + batch_size] for i in range(0, len(train_data), batch_size)]
     logger.info(f'Processing {len(batches)} batches of batch_size {batch_size}')
 
-    #
-    writer = SummaryWriter('runs/ffhq-profile')
-    #
-
     all_save_futures = []
     # for i in tqdm(range(len(batches)), desc="Processing Batches"):
     for i in tqdm(range(5), desc="Processing Batches"):
         batch = batches[i]
 
-        with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-            schedule=torch.profiler.schedule(wait=0, warmup=0, active=1),
-            on_trace_ready=torch.profiler.tensorboard_trace_handler(writer.log_dir),
-            record_shapes=True,
-            profile_memory=True,
-            with_stack=True  # Adds call stack information for more detailed analysis
-        ) as prof:
-            batch_save_futures = extract_caption_t5_batch(batch, t5, t5_save_dir, t5_max_token_length, dataset_root)
-            all_save_futures.extend(batch_save_futures)
-            prof.step()  # Next profiling step
-            
-    #
-    writer.close()
-    #
+        batch_save_futures = extract_caption_t5_batch(batch, t5, t5_save_dir, t5_max_token_length, dataset_root)
+        all_save_futures.extend(batch_save_futures)            
+
     logger.info('finished extract_caption_t5. cleaning up...')
     del t5
     flush()

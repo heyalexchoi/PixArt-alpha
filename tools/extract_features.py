@@ -272,7 +272,6 @@ def get_args():
     parser.add_argument('--t5_max_token_length', default=120, type=int)
     parser.add_argument('--start_index', default=0, type=int)
     parser.add_argument('--end_index', default=1000000, type=int)
-    parser.add_argument('--max_workers', default=8, type=int)
     parser.add_argument('--t5_save_root', default='data/data_toy/caption_feature_wmask', type=str)
     parser.add_argument('--vae_save_root', default='data/data_toy/img_vae_features', type=str)
     parser.add_argument('--dataset_root', default='data/data_toy', type=str)
@@ -301,8 +300,6 @@ if __name__ == '__main__':
     dataset_root = args.dataset_root
     vae_batch_size = args.vae_batch_size
     t5_batch_size = args.t5_batch_size
-    
-    max_workers = args.max_workers
 
     start_index = args.start_index
     end_index = args.end_index
@@ -310,7 +307,7 @@ if __name__ == '__main__':
     if not args.skip_t5:
         # prepare extracted caption t5 features for training
         logger.info(f"Extracting T5 features for {json_path}\nMax token length: {t5_max_token_length}\
-                    \nDevice: {device}\nBatch size: {t5_batch_size}\nMax Workers: {max_workers}\
+                    \nDevice: {device}\nBatch size: {t5_batch_size}\
                     \nSave to: {t5_save_dir}")
         extract_caption_t5(
             t5_batch_size=t5_batch_size,

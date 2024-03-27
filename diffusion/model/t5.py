@@ -12,6 +12,11 @@ from huggingface_hub import hf_hub_download
 
 import torch.profiler
 
+# 
+from diffusion.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
 class T5Embedder:
 
     available_models = ['t5-v1_1-xxl']
@@ -90,7 +95,9 @@ class T5Embedder:
         self.model_max_length = model_max_length
 
     def get_text_embeddings(self, texts):
+        logger.info(f'get_text_embeddings start') #
         texts = [self.text_preprocessing(text) for text in texts]
+        logger.info(f'get_text_embeddings text_preprocessing finished') #
 
         text_tokens_and_mask = self.tokenizer(
             texts,
@@ -101,17 +108,19 @@ class T5Embedder:
             add_special_tokens=True,
             return_tensors='pt'
         )
+        logger.info(f'get_text_embeddings tokenizer finished') #
 
-        text_tokens_and_mask['input_ids'] = text_tokens_and_mask['input_ids']
-        text_tokens_and_mask['attention_mask'] = text_tokens_and_mask['attention_mask']
+        input_ids = text_tokens_and_mask['input_ids'].to(self.device)
+        attention_mask = text_tokens_and_mask['attention_mask'].to(self.device)
+        logger.info(f'get_text_embeddings input_ids and attention_mask moved to device') #
 
         with torch.no_grad():
-            # import pdb; pdb.set_trace()
             text_encoder_embs = self.model(
-                input_ids=text_tokens_and_mask['input_ids'].to(self.device),
-                attention_mask=text_tokens_and_mask['attention_mask'].to(self.device),
+                input_ids=input_ids,
+                attention_mask=attention_mask,
             )['last_hidden_state'].detach()
-        return text_encoder_embs, text_tokens_and_mask['attention_mask'].to(self.device)
+            logger.info(f'get_text_embeddings embeddings completed') #
+        return text_encoder_embs, attention_mask
 
     def text_preprocessing(self, text):
         if self.use_text_preprocessing:

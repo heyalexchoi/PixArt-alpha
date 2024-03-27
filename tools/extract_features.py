@@ -204,6 +204,7 @@ def extract_img_vae_multiscale(batch_size=1):
 
 # T5 feature extraction
 def extract_caption_t5_batch(batch, t5, t5_save_dir, t5_max_token_length, dataset_root):
+    logger.info(f'extract_caption_t5_batch start') #
     with torch.no_grad():
         captions = [item['prompt'].strip() for item in batch]
         output_paths = [get_t5_feature_path(
@@ -212,20 +213,25 @@ def extract_caption_t5_batch(batch, t5, t5_save_dir, t5_max_token_length, datase
             relative_root_dir=dataset_root,
             max_token_length=t5_max_token_length,
         ) for item in batch]
+        logger.info(f'extract_caption_t5_batch got output_paths') #
 
         for output_path in output_paths:
             output_dir = os.path.dirname(output_path)
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
-        
+        logger.info(f'extract_caption_t5_batch get_text_embeddings') #
         caption_embs, emb_masks = t5.get_text_embeddings(captions)
+        logger.info(f'extract_caption_t5_batch get_text_embeddings finished') #
 
         for i, output_path in enumerate(output_paths):
+            logger.info(f'extract_caption_t5_batch start get emb_dict') #
             emb_dict = {
                 'caption_feature': caption_embs[i].float().cpu().data.numpy(),
                 'attention_mask': emb_masks[i].cpu().data.numpy(),
             }
+            logger.info(f'extract_caption_t5_batch np.savez_compressed start') #
             np.savez_compressed(output_path, **emb_dict)
+            logger.info(f'extract_caption_t5_batch np.savez_compressed finished') #
         logger.info(f"Completed T5 batch of length {len(batch)}")
 
 def extract_caption_t5(
@@ -240,7 +246,7 @@ def extract_caption_t5(
     train_data_json = json.load(open(json_path, 'r'))
     # Assuming args.start_index and args.end_index are defined elsewhere
     train_data = train_data_json[start_index:end_index]
-
+    logger.info('Calculating completed paths...') #
     completed_paths = set([item['path'] for item in train_data if os.path.exists(get_t5_feature_path(
         t5_save_dir=t5_save_dir, 
         image_path=item['path'],

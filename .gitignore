@@ -166,3 +166,6 @@ docker/cache/huggingface
 
 # wandb
 wandb
+
+# profiling
+runs/

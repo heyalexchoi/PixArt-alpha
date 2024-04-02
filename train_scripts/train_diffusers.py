@@ -116,8 +116,8 @@ def prepare_vis():
 
 
 @torch.inference_mode()
-def log_validation(model, accelerator, weight_dtype, step):
-    logger.info("Running validation... ")
+def log_eval_images(model, step):
+    logger.info("Generating validation images... ")
 
     model = accelerator.unwrap_model(model)
     pipeline = PixArtAlphaPipeline.from_pretrained(
@@ -191,6 +191,44 @@ def log_validation(model, accelerator, weight_dtype, step):
     torch.cuda.empty_cache()
     return image_logs
 
+@torch.inference_mode()
+def log_validation_loss(model, global_step):
+    model.eval()
+    validation_losses = []
+
+    for batch in val_dataloader:
+        if load_vae_feat:
+            z = batch[0]
+        else:
+            with torch.cuda.amp.autocast(enabled=config.mixed_precision == 'fp16'):
+                posterior = vae.encode(batch[0]).latent_dist
+                if config.sample_posterior:
+                    z = posterior.sample()
+                else:
+                    z = posterior.mode()
+        latents = (z * config.scale_factor).to(weight_dtype)
+        y = batch[1].squeeze(1).to(weight_dtype)
+        y_mask = batch[2].squeeze(1).squeeze(1).to(weight_dtype)
+        data_info = {'resolution': batch[3]['img_hw'].to(weight_dtype), 'aspect_ratio': batch[3]['aspect_ratio'].to(weight_dtype),}
+
+        # Sample multiple timesteps for each image
+        bs = latents.shape[0]
+        timesteps = torch.randint(0, config.train_sampling_steps, (bs,), device=latents.device).long()
+
+        # Predict the noise residual and compute the validation loss
+        with accelerator.autocast():
+            loss_term = train_diffusion.training_losses_diffusers(
+                model, latents, timesteps,
+                model_kwargs = dict(encoder_hidden_states=y, encoder_attention_mask=y_mask, added_cond_kwargs=data_info),
+            )
+            loss = loss_term['loss'].mean()
+            validation_losses.append(accelerator.gather(loss).cpu().numpy())
+
+    validation_loss = np.mean(validation_losses)
+    logger.info(f"Global Step {global_step}: Validation Loss: {validation_loss:.4f}")
+    accelerator.log({"validation_loss": validation_loss}, step=global_step)
+
+    model.train()
 
 def train(model):
     if config.get('debug_nan', False):
@@ -200,8 +238,6 @@ def train(model):
     log_buffer = LogBuffer()
 
     global_step = start_step + 1
-
-    load_vae_feat = getattr(train_dataloader.dataset, 'load_vae_feat', False)
 
     # Now you train the model
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
@@ -280,12 +316,15 @@ def train(model):
             
             accelerator.wait_for_everyone()
             if (config.eval_sampling_steps and global_step % config.eval_sampling_steps == 0)\
-                or (config.log_val_start and (step + 1) == 1):
-                log_validation(model, accelerator, weight_dtype, global_step)
+                or (config.eval_sample_start and (step + 1) == 1):
+                log_eval_images(model=model, global_step=global_step)
 
         accelerator.wait_for_everyone()
         if (config.save_model_epochs and epoch % config.save_model_epochs == 0) or epoch == config.num_epochs:
             save_state(global_step)
+        
+        if (config.log_val_loss_epochs and epoch % config.log_val_loss_epochs == 0) or epoch == config.num_epochs:
+            log_validation_loss(model=model, global_step=global_step)
 
 def save_state(global_step):
     if accelerator.is_main_process:
@@ -350,6 +389,8 @@ if __name__ == '__main__':
         print("No validation prompts provided. Will use default validation prompts.")
 
     validate_config(config)
+
+    load_vae_feat = config.data.load_vae_feat
 
     os.umask(0o000)
     os.makedirs(config.work_dir, exist_ok=True)
@@ -473,7 +514,7 @@ if __name__ == '__main__':
     if config.grad_checkpointing:
         model.enable_gradient_checkpointing()
 
-    if not config.data.load_vae_feat:
+    if not load_vae_feat:
         vae = AutoencoderKL.from_pretrained(config.vae_pretrained).cuda()
 
     # prepare for FSDP clip grad norm calculation

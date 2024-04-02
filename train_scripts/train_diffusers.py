@@ -193,6 +193,9 @@ def log_eval_images(model, step):
 
 @torch.inference_mode()
 def log_validation_loss(model, global_step):
+    if not val_dataloader:
+        logger.warning("No validation data provided. Skipping validation.")
+        return
     model.eval()
     validation_losses = []
 
@@ -524,11 +527,22 @@ if __name__ == '__main__':
 
     # build dataloader
     set_data_root(config.data_root)
-    logger.info(f"ratio of real user prompt: {config.real_prompt_ratio}")
+    # logger.info(f"ratio of real user prompt: {config.real_prompt_ratio}")
     dataset = build_dataset(
         config.data, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
-        real_prompt_ratio=config.real_prompt_ratio, max_length=max_length, config=config,
+        # real_prompt_ratio=config.real_prompt_ratio, 
+        max_length=max_length, config=config,
     )
+
+    val_dataset = None
+    val_dataloader = None
+
+    if config.val_data:
+        val_dataset = build_dataset(
+            config.val_data, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
+            max_length=max_length, config=config,
+        )
+
     if config.multi_scale:
         batch_sampler = AspectRatioBatchSampler(sampler=RandomSampler(dataset), dataset=dataset,
                                                 batch_size=config.train_batch_size, aspect_ratios=dataset.aspect_ratio, drop_last=True,
@@ -538,6 +552,13 @@ if __name__ == '__main__':
         #                                                 batch_size=config.train_batch_size, aspect_ratios=dataset.aspect_ratio,
         #                                                 ratio_nums=dataset.ratio_nums)
         train_dataloader = build_dataloader(dataset, batch_sampler=batch_sampler, num_workers=config.num_workers)
+
+        if val_dataset:
+            val_batch_sampler = AspectRatioBatchSampler(sampler=RandomSampler(val_dataset), dataset=val_dataset,
+                                                batch_size=config.train_batch_size, aspect_ratios=dataset.aspect_ratio, drop_last=True,
+                                                ratio_nums=dataset.ratio_nums, config=config, valid_num=config.valid_num)
+            val_dataloader = build_dataloader(val_dataset, batch_sampler=val_batch_sampler, num_workers=config.num_workers)
+
     else:
         train_dataloader = build_dataloader(dataset, num_workers=config.num_workers, batch_size=config.train_batch_size, shuffle=True)
 

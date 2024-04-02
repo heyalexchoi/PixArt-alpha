@@ -93,13 +93,16 @@ def get_path_for_validation_prompt(prompt, max_length):
     return f'output/tmp/{hex_dig}_{max_length}.pth'
 
 def prepare_vis():
+    if not eval_sample_prompts:
+        raise ValueError("No evaluation prompts provided. Please provide evaluation prompts in the config file.")
+    
     if accelerator.is_main_process:
         # preparing embeddings for visualization. We put it here for saving GPU memory
         
         logger.info("Preparing Visualization prompt embeddings...")
         logger.info(f"Loading text encoder and tokenizer from {args.pipeline_load_from} ...")
         skip = True
-        for prompt in validation_prompts:
+        for prompt in eval_sample_prompts:
             path = get_path_for_validation_prompt(prompt, max_length)
             if not os.path.exists(path):
                 skip = False
@@ -108,7 +111,7 @@ def prepare_vis():
             print(f"Saving visualizate prompt text embedding at output/tmp/")
             tokenizer = T5Tokenizer.from_pretrained(args.pipeline_load_from, subfolder="tokenizer")
             text_encoder = T5EncoderModel.from_pretrained(args.pipeline_load_from, subfolder="text_encoder").to(accelerator.device)
-            for prompt in validation_prompts:
+            for prompt in eval_sample_prompts:
                 caption_token = tokenizer(prompt, max_length=max_length, padding="max_length", truncation=True, return_tensors="pt").to(accelerator.device)
                 caption_emb = text_encoder(caption_token.input_ids, attention_mask=caption_token.attention_mask)[0]
                 torch.save({'caption_embeds': caption_emb, 'emb_mask': caption_token.attention_mask}, get_path_for_validation_prompt(prompt, max_length))
@@ -135,11 +138,11 @@ def log_eval_images(model, step):
     image_logs = []
     images = []
     latents = []
-    for _, prompt in enumerate(validation_prompts):
+    for _, prompt in enumerate(eval_sample_prompts):
         embed = torch.load(get_path_for_validation_prompt(prompt, max_length), map_location='cpu')
         caption_embs, emb_masks = embed['caption_embeds'].to(accelerator.device), embed['emb_mask'].to(accelerator.device)
         latents.append(pipeline(
-            num_inference_steps=14,
+            num_inference_steps=config.eval.inference_steps,
             num_images_per_prompt=1,
             generator=generator,
             guidance_scale=4.5,
@@ -155,7 +158,7 @@ def log_eval_images(model, step):
 
     for latent in latents:
         images.append(pipeline.vae.decode(latent.to(weight_dtype) / pipeline.vae.config.scaling_factor, return_dict=False)[0])
-    for prompt, image in zip(validation_prompts, images):
+    for prompt, image in zip(eval_sample_prompts, images):
         image = pipeline.image_processor.postprocess(image, output_type="pil")
         image_logs.append({"validation_prompt": prompt, "images": image})
 
@@ -242,6 +245,9 @@ def train(model):
 
     global_step = start_step + 1
 
+    if config.eval.at_start:
+        log_eval_images(model=model, global_step=global_step)
+
     # Now you train the model
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
         data_time_start= time.time()
@@ -316,11 +322,6 @@ def train(model):
             accelerator.wait_for_everyone()
             if config.save_model_steps and global_step % config.save_model_steps == 0:
                 save_state(global_step)
-            
-            accelerator.wait_for_everyone()
-            if (config.eval_sampling_steps and global_step % config.eval_sampling_steps == 0)\
-                or (config.eval_sample_start and (step + 1) == 1):
-                log_eval_images(model=model, global_step=global_step)
 
         accelerator.wait_for_everyone()
         if (config.save_model_epochs and epoch % config.save_model_epochs == 0) or epoch == config.num_epochs:
@@ -328,6 +329,9 @@ def train(model):
         
         if (config.log_val_loss_epochs and epoch % config.log_val_loss_epochs == 0) or epoch == config.num_epochs:
             log_validation_loss(model=model, global_step=global_step)
+
+        if config.eval.every_n_epochs and epoch % config.eval.every_n_epochs == 0:
+            log_eval_images(model=model, global_step=global_step)
 
 def save_state(global_step):
     if accelerator.is_main_process:
@@ -388,8 +392,6 @@ if __name__ == '__main__':
         config.log_interval = 1
         config.train_batch_size = 32
         config.valid_num = 100
-    if not config.validation_prompts:
-        print("No validation prompts provided. Will use default validation prompts.")
 
     validate_config(config)
 
@@ -454,7 +456,7 @@ if __name__ == '__main__':
         get_path_for_validation_prompt('', max_length), max_length=max_length
     )
 
-    validation_prompts = config.validation_prompts
+    eval_sample_prompts = config.eval.prompts
 
     # preparing embeddings for visualization. We put it here for saving GPU memory
     prepare_vis()

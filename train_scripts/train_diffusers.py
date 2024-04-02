@@ -275,26 +275,25 @@ def train(model):
             data_time_start= time.time()
 
             accelerator.wait_for_everyone()
-            if accelerator.is_main_process:
-                if global_step % config.save_model_steps == 0:
-                    save_path = os.path.join(os.path.join(config.work_dir, 'checkpoints'), f"checkpoint-{global_step}")
-                    os.umask(0o000)
-                    logger.info(f"Start to save state to {save_path}")
-                    accelerator.save_state(save_path)
-                    logger.info(f"Saved state to {save_path}")
-
-                if global_step % config.eval_sampling_steps == 0 or (step + 1) == 1:
-                    log_validation(model, accelerator, weight_dtype, global_step)
+            if config.save_model_steps and global_step % config.save_model_steps == 0:
+                save_state(global_step)
+            
+            accelerator.wait_for_everyone()
+            if (config.eval_sampling_steps and global_step % config.eval_sampling_steps == 0)\
+                or (config.log_val_start and (step + 1) == 1):
+                log_validation(model, accelerator, weight_dtype, global_step)
 
         accelerator.wait_for_everyone()
-        if epoch % config.save_model_epochs == 0 or epoch == config.num_epochs:
-            os.umask(0o000)
-            save_path = os.path.join(os.path.join(config.work_dir, 'checkpoints'), f"checkpoint-{global_step}")
-            logger.info(f"Start to save state to {save_path}")
-            model = accelerator.unwrap_model(model)
-            model.save_pretrained(save_path)
-            logger.info(f"Saved state to {save_path}")
+        if (config.save_model_epochs and epoch % config.save_model_epochs == 0) or epoch == config.num_epochs:
+            save_state(global_step)
 
+def save_state(global_step):
+    if accelerator.is_main_process:
+        save_path = os.path.join(os.path.join(config.work_dir, 'checkpoints'), f"checkpoint-{global_step}")
+        os.umask(0o000)
+        logger.info(f"Start to save state to {save_path}")
+        accelerator.save_state(save_path)
+        logger.info(f"Saved state to {save_path}")
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Process some integers.")
@@ -329,6 +328,9 @@ def parse_args():
     args = parser.parse_args()
     return args
 
+def validate_config(config):
+    if not config.work_dir:
+        raise ValueError("work_dir is not defined in the config file")
 
 if __name__ == '__main__':
     args = parse_args()
@@ -346,6 +348,8 @@ if __name__ == '__main__':
         config.valid_num = 100
     if not config.validation_prompts:
         print("No validation prompts provided. Will use default validation prompts.")
+
+    validate_config(config)
 
     os.umask(0o000)
     os.makedirs(config.work_dir, exist_ok=True)

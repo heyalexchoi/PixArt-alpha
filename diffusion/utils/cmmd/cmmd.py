@@ -13,7 +13,72 @@ from PIL import Image
 import torch
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
-from transformers import CLIPModel, CLIPProcessor
+from .clip import ClipImageEmbeddingModel
+from .mmd import compute_mmd
+from transformers import CLIPImageProcessor
+
+@torch.no_grad()
+def get_embeddings_for_images(
+    clip_model: ClipImageEmbeddingModel,
+    images: List[Image.Image],
+    batch_size: int,
+    device: str,
+    num_workers: int,
+    max_count: int = -1,
+) -> torch.Tensor:
+    """Computes embeddings for the images in the given directory."""
+    processor = clip_model.processor
+
+    dataset = ImageDataset(images, processor, max_count=max_count)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+    all_embs = []
+    for batch in tqdm(dataloader, total=len(dataloader)):
+        batch = batch.to(device)
+        embs = clip_model.get_embeddings(images=batch, preprocess=False)
+        all_embs.append(embs)
+
+    all_embs = torch.cat(all_embs, dim=0)
+    return all_embs
+
+def get_cmmd_for_images(
+    ref_images: List[Image.Image],
+    eval_images: List[Image.Image],
+    batch_size: int = 64,
+    num_workers: int = 8,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+) -> torch.Tensor:
+    clip_model = ClipImageEmbeddingModel(device=device)
+    ref_embs = get_embeddings_for_images(
+        images=ref_images,
+        clip_model=clip_model,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        device=device,
+    )
+    eval_embs = get_embeddings_for_images(
+        images=eval_images,
+        clip_model=clip_model,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        device=device,
+    )
+    clip_model.unload()
+    return compute_mmd(ref_embs, eval_embs)
+
+class ImageDataset(Dataset):
+    def __init__(self, images: list, processor: CLIPImageProcessor, max_count: int = -1):
+        self.images = images
+        if max_count > 0:
+            self.images = self.images[:max_count]
+        self.processor = processor
+
+    def __len__(self) -> int:
+        return len(self.images)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        image = self.images[idx]
+        return self.processor(images=image, return_tensors="pt")
 
 # written by claude as adaptation and not tested
 def _get_image_list(path: str) -> List[str]:
@@ -25,22 +90,6 @@ def _get_image_list(path: str) -> List[str]:
     # Sort the list to ensure a deterministic output.
     image_list.sort()
     return image_list
-
-# written by claude as adaptation and not tested
-class ImageDataset(Dataset):
-    def __init__(self, image_dir: str, processor: CLIPProcessor, max_count: int = -1):
-        self.image_paths = _get_image_list(image_dir)
-        if max_count > 0:
-            self.image_paths = self.image_paths[:max_count]
-        self.processor = processor
-
-    def __len__(self) -> int:
-        return len(self.image_paths)
-
-    def __getitem__(self, idx: int) -> torch.Tensor:
-        image_path = self.image_paths[idx]
-        image = Image.open(image_path).convert("RGB")
-        return self.processor(images=image, return_tensors="pt")["pixel_values"].squeeze()
 
 # written by claude as adaptation and not tested
 @torch.no_grad()

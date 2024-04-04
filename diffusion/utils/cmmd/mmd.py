@@ -16,7 +16,7 @@ _SIGMA = 10
 _SCALE = 1000
 
 
-def mmd(x, y):
+def compute_mmd(x, y) -> torch.Tensor:
     """Memory-efficient MMD implementation in PyTorch.
 
     This implements the minimum-variance/biased version of the estimator described

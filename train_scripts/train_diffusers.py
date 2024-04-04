@@ -199,6 +199,7 @@ def log_validation_loss(model, global_step):
     if not val_dataloader:
         logger.warning("No validation data provided. Skipping validation.")
         return
+    
     model.eval()
     validation_losses = []
 
@@ -236,6 +237,16 @@ def log_validation_loss(model, global_step):
 
     model.train()
 
+def log_cmmd(model, global_step):
+    if not config.cmmd:
+        logger.warning("No CMMD data provided. Skipping CMMD calculation.")
+    # deterministically sample image-text pairs from train and val sets
+    # check if there is embeddings for the 'real' images
+    # if not, generate embeddings for the 'real' images and save
+    # generate images using the text captions
+    # compare cmmd between the generated images and the 'real' images
+    # log cmmd value and the images with their captions
+
 def train(model):
     if config.get('debug_nan', False):
         DebugUnderflowOverflow(model)
@@ -247,6 +258,9 @@ def train(model):
 
     if config.eval.at_start:
         log_eval_images(model=model, global_step=global_step)
+
+    if config.cmmd.at_start:
+        pass
 
     # Now you train the model
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
@@ -377,6 +391,8 @@ def parse_args():
 def validate_config(config):
     if not config.work_dir:
         raise ValueError("work_dir is not defined in the config file")
+    if not config.eval:
+        config.eval = {}
 
 if __name__ == '__main__':
     args = parse_args()

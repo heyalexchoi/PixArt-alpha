@@ -96,6 +96,7 @@ def get_path_for_validation_prompt(prompt, max_length):
 # embed eval sample prompts and CMMD prompts so we don't need T5 during training
 @torch.inference_mode()
 def generate_t5_prompt_embeddings():
+    batch_size = config.t5.batch_size
     cmmd_train_items, cmmd_val_items = get_cmmd_train_and_val_samples()
     if not eval_sample_prompts and not cmmd_train_items and not cmmd_val_items:
         logger.info("No evaluation prompts, or CMMD sample prompts provided. Skipping prompt embedding generation.")
@@ -124,11 +125,37 @@ def generate_t5_prompt_embeddings():
     logger.info(f"Loading T5 text encoder and tokenizer from {args.pipeline_load_from} ...")
     tokenizer = T5Tokenizer.from_pretrained(args.pipeline_load_from, subfolder="tokenizer")
     text_encoder = T5EncoderModel.from_pretrained(args.pipeline_load_from, subfolder="text_encoder").to(accelerator.device)
-    # TODO: batch this?
-    for prompt in prompts:
-        caption_token = tokenizer(prompt, max_length=max_length, padding="max_length", truncation=True, return_tensors="pt").to(accelerator.device)
-        caption_emb = text_encoder(caption_token.input_ids, attention_mask=caption_token.attention_mask)[0]
-        torch.save({'caption_embeds': caption_emb, 'emb_mask': caption_token.attention_mask}, get_path_for_validation_prompt(prompt, max_length))
+    
+    for i in range(0, len(prompts), batch_size):
+        batch_prompts = prompts[i:i+batch_size]
+        caption_tokens = tokenizer(
+            batch_prompts, 
+            max_length=max_length, 
+            padding="max_length", 
+            truncation=True,
+            return_tensors="pt",
+        ).to(accelerator.device)
+        
+        caption_embeds = text_encoder(
+            caption_tokens.input_ids, 
+            attention_mask=caption_tokens.attention_mask,
+        )[0]
+
+        # Assuming you are modifying to save each prompt's data separately
+        for j, prompt in enumerate(batch_prompts):
+            # Extract embeddings and attention mask for the j-th item in the batch
+            single_caption_emb = caption_embeds[j, :, :].unsqueeze(0)  # Add batch dimension back
+            single_emb_mask = caption_tokens.attention_mask[j, :].unsqueeze(0)  # Add batch dimension back
+            
+            # Generate a unique path for each prompt
+            save_path = get_path_for_validation_prompt(prompt, max_length)
+            
+            torch.save({
+                'caption_embeds': single_caption_emb, 
+                'emb_mask': single_emb_mask
+                }, 
+                save_path
+            )
     flush()
 
 def get_pipeline(

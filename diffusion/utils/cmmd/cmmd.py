@@ -8,7 +8,7 @@ IO utilities.
 """IO utilities."""
 
 import os
-from typing import List
+from typing import List, Union
 from PIL import Image
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -20,13 +20,16 @@ from transformers import CLIPImageProcessor
 @torch.no_grad()
 def get_embeddings_for_images(
     clip_model: ClipImageEmbeddingModel,
-    images: List[Image.Image],
+    images: List[Union[Image.Image, str]],
     batch_size: int,
     device: str,
     num_workers: int,
     max_count: int = -1,
 ) -> torch.Tensor:
-    """Computes embeddings for the images in the given directory."""
+    """
+    Computes embeddings for the images in the given directory.
+    arg `images` can be PIL images or paths to images.
+    """
     processor = clip_model.processor
 
     dataset = ImageDataset(images, processor, max_count=max_count)
@@ -42,8 +45,8 @@ def get_embeddings_for_images(
     return all_embs
 
 def get_cmmd_for_images(
-    ref_images: List[Image.Image],
-    eval_images: List[Image.Image],
+    ref_images: List[Union[Image.Image, str]],
+    eval_images: List[Union[Image.Image, str]],
     batch_size: int = 64,
     num_workers: int = 8,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
@@ -67,7 +70,12 @@ def get_cmmd_for_images(
     return compute_mmd(ref_embs, eval_embs)
 
 class ImageDataset(Dataset):
-    def __init__(self, images: list, processor: CLIPImageProcessor, max_count: int = -1):
+    def __init__(
+            self, 
+            images: List[Union[Image.Image, str]], 
+            processor: CLIPImageProcessor, 
+            max_count: int = -1,
+        ):
         self.images = images
         if max_count > 0:
             self.images = self.images[:max_count]
@@ -78,6 +86,8 @@ class ImageDataset(Dataset):
 
     def __getitem__(self, idx: int) -> torch.Tensor:
         image = self.images[idx]
+        if isinstance(image, str):
+            image = Image.open(image)
         return self.processor(images=image, return_tensors="pt")
 
 # written by claude as adaptation and not tested

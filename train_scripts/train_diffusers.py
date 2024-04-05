@@ -6,6 +6,8 @@ import time
 import types
 import warnings
 from pathlib import Path
+import random
+import hashlib
 
 current_file_path = Path(__file__).resolve()
 sys.path.insert(0, str(current_file_path.parent.parent))
@@ -32,6 +34,7 @@ from diffusion.utils.logger import get_root_logger, rename_file_with_creation_ti
 from diffusion.utils.lr_scheduler import build_lr_scheduler
 from diffusion.utils.misc import set_random_seed, read_config, init_random_seed, DebugUnderflowOverflow
 from diffusion.utils.optimizer import build_optimizer, auto_scale_lr
+# from diffusion.data.datasets.utils import get_clip_feature_path
 
 warnings.filterwarnings("ignore")  # ignore warning
 
@@ -63,7 +66,7 @@ def token_drop(y, y_mask, force_drop_ids=None):
     y_mask = torch.where(drop_ids[:, None], uncond_prompt_attention_mask, y_mask)
     return y, y_mask
 
-
+@torch.inference_mode()
 def get_null_embed(npz_file, max_length=120):
     if os.path.exists(npz_file) and (npz_file.endswith('.npz') or npz_file.endswith('.pth')):
         data = torch.load(npz_file)
@@ -85,81 +88,135 @@ def get_null_embed(npz_file, max_length=120):
 
     return uncond_prompt_embeds, uncond_prompt_attention_mask
 
-import hashlib
-
 def get_path_for_validation_prompt(prompt, max_length):
     hash_object = hashlib.sha256(prompt.encode())
     hex_dig = hash_object.hexdigest()
     return f'output/tmp/{hex_dig}_{max_length}.pth'
 
-def prepare_vis():
-    if not eval_sample_prompts:
-        raise ValueError("No evaluation prompts provided. Please provide evaluation prompts in the config file.")
+# embed eval sample prompts and CMMD prompts so we don't need T5 during training
+@torch.inference_mode()
+def generate_t5_prompt_embeddings():
+    cmmd_train_items, cmmd_val_items = get_cmmd_train_and_val_samples()
+    if not eval_sample_prompts and not cmmd_train_items and not cmmd_val_items:
+        logger.info("No evaluation prompts, or CMMD sample prompts provided. Skipping prompt embedding generation.")
+        return
     
+    prompts = eval_sample_prompts + \
+        [item['prompt'] for item in cmmd_train_items] + \
+        [item['prompt'] for item in cmmd_val_items]
+    
+    saved_prompts = []
+    logger.info(f"Embedding {len(prompts)} prompts...")
     if accelerator.is_main_process:
-        # preparing embeddings for visualization. We put it here for saving GPU memory
-        
-        logger.info("Preparing Visualization prompt embeddings...")
-        logger.info(f"Loading text encoder and tokenizer from {args.pipeline_load_from} ...")
-        skip = True
-        for prompt in eval_sample_prompts:
+        for prompt in prompts:
             path = get_path_for_validation_prompt(prompt, max_length)
-            if not os.path.exists(path):
-                skip = False
-                break
-        if accelerator.is_main_process and not skip:
-            print(f"Saving visualizate prompt text embedding at output/tmp/")
-            tokenizer = T5Tokenizer.from_pretrained(args.pipeline_load_from, subfolder="tokenizer")
-            text_encoder = T5EncoderModel.from_pretrained(args.pipeline_load_from, subfolder="text_encoder").to(accelerator.device)
-            for prompt in eval_sample_prompts:
-                caption_token = tokenizer(prompt, max_length=max_length, padding="max_length", truncation=True, return_tensors="pt").to(accelerator.device)
-                caption_emb = text_encoder(caption_token.input_ids, attention_mask=caption_token.attention_mask)[0]
-                torch.save({'caption_embeds': caption_emb, 'emb_mask': caption_token.attention_mask}, get_path_for_validation_prompt(prompt, max_length))
-        flush()
+            if os.path.exists(path):
+                saved_prompts.append(prompt)
 
+    logger.info(f"Found {len(saved_prompts)} saved prompt embeddings.")
+    prompts = [prompt for prompt in prompts if prompt not in saved_prompts]
+    
+    if not prompts:
+        logger.info('All prompts are already embedded. Exiting...')
+        return
+    
+    logger.info(f"Embedding {len(prompts)} prompts...")    
+    logger.info(f"Loading T5 text encoder and tokenizer from {args.pipeline_load_from} ...")
+    tokenizer = T5Tokenizer.from_pretrained(args.pipeline_load_from, subfolder="tokenizer")
+    text_encoder = T5EncoderModel.from_pretrained(args.pipeline_load_from, subfolder="text_encoder").to(accelerator.device)
+    # TODO: batch this?
+    for prompt in prompts:
+        caption_token = tokenizer(prompt, max_length=max_length, padding="max_length", truncation=True, return_tensors="pt").to(accelerator.device)
+        caption_emb = text_encoder(caption_token.input_ids, attention_mask=caption_token.attention_mask)[0]
+        torch.save({'caption_embeds': caption_emb, 'emb_mask': caption_token.attention_mask}, get_path_for_validation_prompt(prompt, max_length))
+    flush()
+
+def get_pipeline(
+        transformer=None,
+    ):
+    logger.info(f"Getting pipeline {args.pipeline_load_from} ...")
+    if not transformer:
+        transformer = PixArtAlphaPipeline.load_transformer(args.pipeline_load_from)
+                
+    pipeline = PixArtAlphaPipeline.from_pretrained(
+            args.pipeline_load_from,
+            transformer=transformer,
+            tokenizer=None,
+            text_encoder=None,
+            torch_dtype=weight_dtype,
+            device=accelerator.device,
+        )
+    pipeline.set_progress_bar_config(disable=True)
+    
+    return pipeline
 
 @torch.inference_mode()
-def log_eval_images(model, step):
-    logger.info("Generating validation images... ")
-
-    model = accelerator.unwrap_model(model)
-    pipeline = PixArtAlphaPipeline.from_pretrained(
-        args.pipeline_load_from,
-        transformer=model,
-        tokenizer=None,
-        text_encoder=None,
-        torch_dtype=weight_dtype,
-    )
-    pipeline = pipeline.to(accelerator.device)
-    pipeline.set_progress_bar_config(disable=True)
-
-    generator = torch.Generator(device=accelerator.device).manual_seed(0)
-
-    image_logs = []
+def generate_images(
+        pipeline,
+        caption_embeds,
+        batch_size,
+        num_inference_steps,
+        width,
+        height,
+        seed=0,
+        guidance_scale=4.5,
+    ):
+    logger.info(f"Generating {len(caption_embeds)} images...")    
+    generator = torch.Generator(device=accelerator.device).manual_seed(seed)
     images = []
-    latents = []
-    for _, prompt in enumerate(eval_sample_prompts):
-        embed = torch.load(get_path_for_validation_prompt(prompt, max_length), map_location='cpu')
-        caption_embs, emb_masks = embed['caption_embeds'].to(accelerator.device), embed['emb_mask'].to(accelerator.device)
-        latents.append(pipeline(
-            num_inference_steps=config.eval.inference_steps,
+    # Generate images in batches
+    for i in range(0, len(caption_embeds), batch_size):
+        batch_caption_embeds = caption_embeds[i:i+batch_size]
+        caption_embs = batch_caption_embeds['caption_embeds'].to(accelerator.device)
+        emb_masks = batch_caption_embeds['emb_mask'].to(accelerator.device)
+
+        batch_images = pipeline(
+            width=width,
+            height=height,
+            num_inference_steps=num_inference_steps,
             num_images_per_prompt=1,
             generator=generator,
-            guidance_scale=4.5,
+            guidance_scale=guidance_scale,
             prompt_embeds=caption_embs,
             prompt_attention_mask=emb_masks,
             negative_prompt=None,
             negative_prompt_embeds=uncond_prompt_embeds,
             negative_prompt_attention_mask=uncond_prompt_attention_mask,
-            output_type="latent",
-        ).images)
+        ).images
+        images.extend(batch_images)
+
+    return images
+
+
+@torch.inference_mode()
+def log_eval_images(pipeline, transformer, step):
+    logger.info("Generating validation images... ")
+
+    # transformer = accelerator.unwrap_model(model)
+    # pipeline = get_pipeline(transformer=transformer)
+
+    caption_embeds = []
+    image_logs = []
+    images = []
+    latents = []
+    for prompt in eval_sample_prompts:
+        embed = torch.load(get_path_for_validation_prompt(prompt, max_length), map_location='cpu')
+        caption_embeds.append(embed)
+
+    images = generate_images(
+        pipeline=pipeline,
+        caption_embeds=caption_embeds,
+        batch_size=config.eval.batch_size,
+        num_inference_steps=config.eval.num_inference_steps,
+        width=config.image_size,
+        height=config.image_size,
+        seed=config.eval.seed,
+        guidance_scale=config.eval.guidance_scale,
+    )
 
     flush()
 
-    for latent in latents:
-        images.append(pipeline.vae.decode(latent.to(weight_dtype) / pipeline.vae.config.scaling_factor, return_dict=False)[0])
     for prompt, image in zip(eval_sample_prompts, images):
-        image = pipeline.image_processor.postprocess(image, output_type="pil")
         image_logs.append({"validation_prompt": prompt, "images": image})
 
     for tracker in accelerator.trackers:
@@ -185,13 +242,10 @@ def log_eval_images(model, step):
                     image = wandb.Image(image, caption=validation_prompt)
                     formatted_images.append(image)
 
-            tracker.log({"validation": formatted_images})
+            tracker.log({"eval_images": formatted_images})
         else:
             logger.warn(f"image logging not implemented for {tracker.name}")
 
-    del pipeline
-    gc.collect()
-    torch.cuda.empty_cache()
     return image_logs
 
 @torch.inference_mode()
@@ -237,13 +291,64 @@ def log_validation_loss(model, global_step):
 
     model.train()
 
-def log_cmmd(model, global_step):
+def get_cmmd_train_and_val_samples():
+    if not config.cmmd:
+        logger.info("No CMMD config provided. Skipping get_cmmd_train_and_val_samples")
+        return [], []
+    
+    train_sample_size = config.cmmd.train_sample_size
+    val_sample_size = config.cmmd.val_sample_size
+
+    # deterministically sample image-text pairs from train and val sets
+    train_items = dataset.meta_data_clean
+    val_items = val_dataset.meta_data_clean
+
+    if train_sample_size > len(train_items):
+        logger.warning("train_sample_size is larger than the training dataset size. Using the entire training dataset.")
+        train_sample_size = len(train_items)
+    if val_sample_size > len(val_items):
+        logger.warning("val_sample_size is larger than the validation dataset size. Using the entire validation dataset.")
+        val_sample_size = len(val_items)
+    
+    # deterministic sampler
+    sampler = random.Random(42)
+    train_items = sampler.sample(train_items, train_sample_size)
+    val_items = sampler.sample(val_items, val_sample_size)
+    
+    return train_items, val_items
+
+
+def log_cmmd(
+        model, 
+        global_step,
+        ):
     if not config.cmmd:
         logger.warning("No CMMD data provided. Skipping CMMD calculation.")
-    # deterministically sample image-text pairs from train and val sets
+        return
+    
+    train_items, val_items = get_cmmd_train_and_val_samples()
+
+    # skip this for now. MAYBE later cache the original image embeddings
     # check if there is embeddings for the 'real' images
+    # actually maybe skip this. probably doesnt take that long to just re-embed
+    # embeddings_dir = os.path.join(work_dir, 'orig_image_clip_embeddings')
+    # if not os.path.exists(embeddings_dir):
+    #     os.makedirs(embeddings_dir)
+    # train_image_embeddings_path = os.path.join(embeddings_dir, 'train.pth')
+    # val_image_embeddings_path = os.path.join(embeddings_dir, 'val.pth')
+    # if not os.path.exists(train_image_embeddings_path):
+    #     logger.info("Generating CLIP embeddings for the 'real' images...")
+    #     train_image_embeddings = get_embeddings_for_images(train_image_paths, clip_model, batch_size=16, num_workers=4, device=accelerator.device)
+    #     torch.save(train_image_embeddings, train_image_embeddings_path)
+    #     clip_model.unload()
     # if not, generate embeddings for the 'real' images and save
+
     # generate images using the text captions
+    logger.info("Generating images using the text captions...")
+    train_prompts = [item['prompt'] for item in train_items]
+    val_prompts = [item['prompt'] for item in val_items]
+
+
     # compare cmmd between the generated images and the 'real' images
     # log cmmd value and the images with their captions
 
@@ -475,7 +580,8 @@ if __name__ == '__main__':
     eval_sample_prompts = config.eval.prompts
 
     # preparing embeddings for visualization. We put it here for saving GPU memory
-    prepare_vis()
+    if accelerator.is_main_process:
+        generate_t5_prompt_embeddings()
 
     # build models
     train_diffusion = IDDPM(str(config.train_sampling_steps), learn_sigma=learn_sigma, pred_sigma=pred_sigma, snr=config.snr_loss)
@@ -543,11 +649,14 @@ if __name__ == '__main__':
         for m in accelerator._models:
             m.clip_grad_norm_ = types.MethodType(clip_grad_norm_, m)
 
+    train_data = config.data
+    val_data = config.val_data
+
     # build dataloader
     set_data_root(config.data_root)
     # logger.info(f"ratio of real user prompt: {config.real_prompt_ratio}")
     dataset = build_dataset(
-        config.data, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
+        train_data, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
         # real_prompt_ratio=config.real_prompt_ratio, 
         max_length=max_length, config=config,
     )
@@ -557,7 +666,7 @@ if __name__ == '__main__':
 
     if config.val_data:
         val_dataset = build_dataset(
-            config.val_data, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
+            val_data, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
             max_length=max_length, config=config,
         )
 

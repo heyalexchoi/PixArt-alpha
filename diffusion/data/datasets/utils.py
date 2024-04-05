@@ -106,6 +106,14 @@ def get_t5_feature_path(t5_save_dir, image_path, relative_root_dir, max_token_le
                 extension='.npz',
             )
 
+# def get_clip_feature_path(clip_save_dir, image_path, relative_root_dir):
+#     return get_feature_path(
+#                 feature_dir=clip_save_dir, 
+#                 image_path=image_path,
+#                 relative_root_dir=relative_root_dir,
+#                 extension='.pt',
+#             )
+
 def get_feature_path(feature_dir, image_path, extension, relative_root_dir):
     """
     Returns full feature path in feature_dir, first creating safe filename from image_path, relative to relative_root_dir

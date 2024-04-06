@@ -72,26 +72,28 @@ def token_drop(y, y_mask, force_drop_ids=None):
     return y, y_mask
 
 @torch.inference_mode()
-def get_null_embed(npz_file, max_length=120):
-    if os.path.exists(npz_file) and (npz_file.endswith('.npz') or npz_file.endswith('.pth')):
-        data = torch.load(npz_file)
-        uncond_prompt_embeds = data['uncond_prompt_embeds'].to(accelerator.device)
-        uncond_prompt_attention_mask = data['uncond_prompt_attention_mask'].to(accelerator.device)
+def get_null_embed(path, max_length=120):
+    if not accelerator.is_main_process:
+        return
+    if os.path.exists(path) and (path.endswith('.pth')):
+        encoded_null_tuple = torch.load(path)
+        encoded_null, encoded_null_attention_mask, _, _ = encoded_null_tuple
     else:
-        tokenizer = T5Tokenizer.from_pretrained(pipeline_load_from, subfolder="tokenizer")
-        text_encoder = T5EncoderModel.from_pretrained(pipeline_load_from, subfolder="text_encoder")
-        uncond = tokenizer("", max_length=max_length, padding="max_length", truncation=True, return_tensors="pt")
-        uncond_prompt_embeds = text_encoder(uncond.input_ids, attention_mask=uncond.attention_mask)[0]
+        pipeline = get_text_encoding_pipeline()
+        encoded_null_tuple = pipeline.encode_prompt(
+            prompt="",
+            device=accelerator.device,
+            max_sequence_length=max_length,
+        )
+        # tokenizer = T5Tokenizer.from_pretrained(pipeline_load_from, subfolder="tokenizer")
+        # text_encoder = T5EncoderModel.from_pretrained(pipeline_load_from, subfolder="text_encoder")
+        # uncond = tokenizer("", max_length=max_length, padding="max_length", truncation=True, return_tensors="pt")
+        # uncond_prompt_embeds = text_encoder(uncond.input_ids, attention_mask=uncond.attention_mask)[0]
 
-        torch.save({
-            'uncond_prompt_embeds': uncond_prompt_embeds.cpu(),
-            'uncond_prompt_attention_mask': uncond.attention_mask.cpu()
-        }, npz_file)
+        torch.save(encoded_null_tuple, path)
+        encoded_null, encoded_null_attention_mask, _, _ = encoded_null_tuple
 
-        uncond_prompt_embeds = uncond_prompt_embeds.to(accelerator.device)
-        uncond_prompt_attention_mask = uncond.attention_mask.to(accelerator.device)
-
-    return uncond_prompt_embeds, uncond_prompt_attention_mask
+    return encoded_null, encoded_null_attention_mask
 
 def get_path_for_eval_prompt(prompt, max_length):
     hash_object = hashlib.sha256(prompt.encode())

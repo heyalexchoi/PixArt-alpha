@@ -34,7 +34,11 @@ from diffusion.utils.logger import get_root_logger, rename_file_with_creation_ti
 from diffusion.utils.lr_scheduler import build_lr_scheduler
 from diffusion.utils.misc import set_random_seed, read_config, init_random_seed, DebugUnderflowOverflow
 from diffusion.utils.optimizer import build_optimizer, auto_scale_lr
-# from diffusion.data.datasets.utils import get_clip_feature_path
+from diffusion.data.datasets.utils import get_t5_feature_path
+
+from PIL import Image
+import wandb
+from diffusion.utils.cmmd import get_cmmd_for_images
 
 warnings.filterwarnings("ignore")  # ignore warning
 
@@ -88,29 +92,31 @@ def get_null_embed(npz_file, max_length=120):
 
     return uncond_prompt_embeds, uncond_prompt_attention_mask
 
-def get_path_for_validation_prompt(prompt, max_length):
+def get_path_for_eval_prompt(prompt, max_length):
     hash_object = hashlib.sha256(prompt.encode())
     hex_dig = hash_object.hexdigest()
     return f'output/tmp/{hex_dig}_{max_length}.pth'
 
-# embed eval sample prompts and CMMD prompts so we don't need T5 during training
+# embed eval sample prompts and CMMD prompts so we don't need T5 during training.
+# should already have cmmd train and val prompt embeddings in training features
 @torch.inference_mode()
 def generate_t5_prompt_embeddings():
     batch_size = config.t5.batch_size
-    cmmd_train_items, cmmd_val_items = get_cmmd_train_and_val_samples()
-    if not eval_sample_prompts and not cmmd_train_items and not cmmd_val_items:
-        logger.info("No evaluation prompts, or CMMD sample prompts provided. Skipping prompt embedding generation.")
-        return
+    # cmmd_train_items, cmmd_val_items = get_cmmd_train_and_val_samples()
+    # if not eval_sample_prompts and not cmmd_train_items and not cmmd_val_items:
+    #     logger.info("No evaluation prompts, or CMMD sample prompts provided. Skipping prompt embedding generation.")
+    #     return
     
-    prompts = eval_sample_prompts + \
-        [item['prompt'] for item in cmmd_train_items] + \
-        [item['prompt'] for item in cmmd_val_items]
+    # prompts = eval_sample_prompts + \
+    #     [item['prompt'] for item in cmmd_train_items] + \
+    #     [item['prompt'] for item in cmmd_val_items]
+    prompts = eval_sample_prompts
     
     saved_prompts = []
     logger.info(f"Embedding {len(prompts)} prompts...")
     if accelerator.is_main_process:
         for prompt in prompts:
-            path = get_path_for_validation_prompt(prompt, max_length)
+            path = get_path_for_eval_prompt(prompt, max_length)
             if os.path.exists(path):
                 saved_prompts.append(prompt)
 
@@ -122,45 +128,62 @@ def generate_t5_prompt_embeddings():
         return
     
     logger.info(f"Embedding {len(prompts)} prompts...")    
-    logger.info(f"Loading T5 text encoder and tokenizer from {args.pipeline_load_from} ...")
-    tokenizer = T5Tokenizer.from_pretrained(args.pipeline_load_from, subfolder="tokenizer")
-    text_encoder = T5EncoderModel.from_pretrained(args.pipeline_load_from, subfolder="text_encoder").to(accelerator.device)
+    # logger.info(f"Loading T5 text encoder and tokenizer from {args.pipeline_load_from} ...")
+    pipeline = get_text_encoding_pipeline()
+    # tokenizer = T5Tokenizer.from_pretrained(args.pipeline_load_from, subfolder="tokenizer")
+    # text_encoder = T5EncoderModel.from_pretrained(args.pipeline_load_from, subfolder="text_encoder").to(accelerator.device)
     
     for i in range(0, len(prompts), batch_size):
         batch_prompts = prompts[i:i+batch_size]
-        caption_tokens = tokenizer(
-            batch_prompts, 
-            max_length=max_length, 
-            padding="max_length", 
-            truncation=True,
-            return_tensors="pt",
-        ).to(accelerator.device)
+        # returns tuple: prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask
+        batch_embeddings = pipeline.encode_prompt(
+            prompt=batch_prompts,
+            device=accelerator.device,
+            max_sequence_length=max_length,
+        )
+        # caption_tokens = tokenizer(
+        #     batch_prompts, 
+        #     max_length=max_length, 
+        #     padding="max_length", 
+        #     truncation=True,
+        #     return_tensors="pt",
+        # ).to(accelerator.device)
         
-        caption_embeds = text_encoder(
-            caption_tokens.input_ids, 
-            attention_mask=caption_tokens.attention_mask,
-        )[0]
+        # caption_embeds = text_encoder(
+        #     caption_tokens.input_ids, 
+        #     attention_mask=caption_tokens.attention_mask,
+        # )[0]
 
         # Assuming you are modifying to save each prompt's data separately
         for j, prompt in enumerate(batch_prompts):
             # Extract embeddings and attention mask for the j-th item in the batch
-            single_caption_emb = caption_embeds[j, :, :].unsqueeze(0)  # Add batch dimension back
-            single_emb_mask = caption_tokens.attention_mask[j, :].unsqueeze(0)  # Add batch dimension back
-            
+            # single_caption_emb = prompt_embeds[j, :, :].unsqueeze(0)  # Add batch dimension back
+            # single_emb_mask = prompt_attention_mask[j, :].unsqueeze(0)  # Add batch dimension back
+            # encoded_prompt = batch_embeddings[j, :, :].unsqueeze(0)
+            encoded_prompt = batch_embeddings[j, :, :] # dont think I need batch dim. extract features do not have batch dim
             # Generate a unique path for each prompt
-            save_path = get_path_for_validation_prompt(prompt, max_length)
-            
-            torch.save({
-                'caption_embeds': single_caption_emb, 
-                'emb_mask': single_emb_mask
-                }, 
-                save_path
-            )
+            save_path = get_path_for_eval_prompt(prompt, max_length)
+            torch.save(encoded_prompt, save_path)
+                
     flush()
 
-def get_pipeline(
+def get_text_encoding_pipeline():
+    """Get pipeline with only text encoding components"""
+    logger.info(f"Loading T5 text encoder and tokenizer from {args.pipeline_load_from} ...")
+    pipeline = PixArtAlphaPipeline.from_pretrained(
+            args.pipeline_load_from,
+            vae=None,
+            transformer=None,
+            scheduler=None,
+            torch_dtype=weight_dtype,
+            device=accelerator.device,
+        )
+    return pipeline
+
+def get_image_gen_pipeline(
         transformer=None,
     ):
+    """Get pipeline with image generation components, without text encoding. Optionally load a passed in transformer"""
     logger.info(f"Getting pipeline {args.pipeline_load_from} ...")
     if not transformer:
         transformer = PixArtAlphaPipeline.load_transformer(args.pipeline_load_from)
@@ -173,14 +196,15 @@ def get_pipeline(
             torch_dtype=weight_dtype,
             device=accelerator.device,
         )
-    pipeline.set_progress_bar_config(disable=True)
+    # pipeline.set_progress_bar_config(disable=True)
     
     return pipeline
 
 @torch.inference_mode()
 def generate_images(
         pipeline,
-        caption_embeds,
+        prompt_embeds,
+        prompt_attention_mask,
         batch_size,
         num_inference_steps,
         width,
@@ -188,14 +212,20 @@ def generate_images(
         seed=0,
         guidance_scale=4.5,
     ):
-    logger.info(f"Generating {len(caption_embeds)} images...")    
+    """
+    batch generates images from caption embeddings with batch dim
+    caption embeddings should be 
+    """
+    logger.info(f"Generating {len(prompt_embeds)} images...")    
     generator = torch.Generator(device=accelerator.device).manual_seed(seed)
     images = []
     # Generate images in batches
-    for i in range(0, len(caption_embeds), batch_size):
-        batch_caption_embeds = caption_embeds[i:i+batch_size]
-        caption_embs = batch_caption_embeds['caption_embeds'].to(accelerator.device)
-        emb_masks = batch_caption_embeds['emb_mask'].to(accelerator.device)
+    for i in range(0, len(prompt_embeds), batch_size):
+        batch_prompt_embeds = prompt_embeds[i:i+batch_size]
+        batch_prompt_attention_mask = prompt_attention_mask[i:i+batch_size]
+        # prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask
+        # caption_embs = batch_caption_embeds['caption_feature'].to(accelerator.device)
+        # emb_masks = batch_caption_embeds['attention_mask'].to(accelerator.device)
 
         batch_images = pipeline(
             width=width,
@@ -204,8 +234,8 @@ def generate_images(
             num_images_per_prompt=1,
             generator=generator,
             guidance_scale=guidance_scale,
-            prompt_embeds=caption_embs,
-            prompt_attention_mask=emb_masks,
+            prompt_embeds=batch_prompt_embeds,
+            prompt_attention_mask=batch_prompt_attention_mask,
             negative_prompt=None,
             negative_prompt_embeds=uncond_prompt_embeds,
             negative_prompt_attention_mask=uncond_prompt_attention_mask,
@@ -216,29 +246,47 @@ def generate_images(
 
 
 @torch.inference_mode()
-def log_eval_images(pipeline, transformer, step):
-    logger.info("Generating validation images... ")
+def log_eval_images(pipeline, global_step):
+    logger.info("Generating eval images... ")
+
+    batch_size = config.eval.batch_size
+    seed = config.eval.seed
+    guidance_scale = config.eval.guidance_scale
 
     # transformer = accelerator.unwrap_model(model)
     # pipeline = get_pipeline(transformer=transformer)
 
-    caption_embeds = []
+    prompt_embeds_list = []
+    prompt_attention_mask_list = []
     image_logs = []
     images = []
-    latents = []
+    # latents = []
     for prompt in eval_sample_prompts:
-        embed = torch.load(get_path_for_validation_prompt(prompt, max_length), map_location='cpu')
-        caption_embeds.append(embed)
+        (
+            prompt_embeds,
+            prompt_attention_mask, 
+            _, 
+            _
+         ) = torch.load(
+                get_path_for_eval_prompt(prompt, max_length),
+                map_location='cpu'
+                )
+        prompt_embeds_list.append(prompt_embeds)
+        prompt_attention_mask_list.append(prompt_attention_mask)
+    
+    prompt_embeds = torch.stack(prompt_embeds_list)
+    prompt_attention_mask = torch.stack(prompt_attention_mask_list)
 
     images = generate_images(
         pipeline=pipeline,
-        caption_embeds=caption_embeds,
-        batch_size=config.eval.batch_size,
+        prompt_embeds=prompt_embeds,
+        prompt_attention_mask=prompt_attention_mask,
+        batch_size=batch_size,
         num_inference_steps=config.eval.num_inference_steps,
         width=config.image_size,
         height=config.image_size,
-        seed=config.eval.seed,
-        guidance_scale=config.eval.guidance_scale,
+        seed=seed,
+        guidance_scale=guidance_scale,
     )
 
     flush()
@@ -257,9 +305,14 @@ def log_eval_images(pipeline, transformer, step):
 
                 formatted_images = np.stack(formatted_images)
 
-                tracker.writer.add_images(validation_prompt, formatted_images, step, dataformats="NHWC")
+                tracker.writer.add_images(
+                    validation_prompt, 
+                    formatted_images, 
+                    global_step, 
+                    dataformats="NHWC"
+                )
         elif tracker.name == "wandb":
-            import wandb
+            
             formatted_images = []
 
             for log in image_logs:
@@ -346,38 +399,86 @@ def get_cmmd_train_and_val_samples():
 
 
 def log_cmmd(
-        model, 
+        pipeline,
         global_step,
         ):
     if not config.cmmd:
         logger.warning("No CMMD data provided. Skipping CMMD calculation.")
         return
     
+    data_root = config.data.root
+    t5_save_dir = config.data.t5_save_dir
     train_items, val_items = get_cmmd_train_and_val_samples()
-
-    # skip this for now. MAYBE later cache the original image embeddings
-    # check if there is embeddings for the 'real' images
-    # actually maybe skip this. probably doesnt take that long to just re-embed
-    # embeddings_dir = os.path.join(work_dir, 'orig_image_clip_embeddings')
-    # if not os.path.exists(embeddings_dir):
-    #     os.makedirs(embeddings_dir)
-    # train_image_embeddings_path = os.path.join(embeddings_dir, 'train.pth')
-    # val_image_embeddings_path = os.path.join(embeddings_dir, 'val.pth')
-    # if not os.path.exists(train_image_embeddings_path):
-    #     logger.info("Generating CLIP embeddings for the 'real' images...")
-    #     train_image_embeddings = get_embeddings_for_images(train_image_paths, clip_model, batch_size=16, num_workers=4, device=accelerator.device)
-    #     torch.save(train_image_embeddings, train_image_embeddings_path)
-    #     clip_model.unload()
-    # if not, generate embeddings for the 'real' images and save
 
     # generate images using the text captions
     logger.info("Generating images using the text captions...")
-    train_prompts = [item['prompt'] for item in train_items]
-    val_prompts = [item['prompt'] for item in val_items]
+   
+    # extract saved t5 features and return 2 item tuple
+    # of batch tensors for prompt embeds and attention masks
+    def build_t5_batch_tensors_from_item_paths(paths):
+        caption_feature_list = []
+        attention_mask_list = []
+        for item_path in paths:
+            npz_path = get_t5_feature_path(t5_save_dir=t5_save_dir, image_path=item_path)
+            embed_dict = np.load(npz_path)
+            caption_feature = torch.from_numpy(embed_dict['caption_feature'])
+            attention_mask = torch.from_numpy(embed_dict['attention_mask'])
+            caption_feature_list.append(caption_feature)
+            attention_mask_list.append(attention_mask)
+        return torch.stack(caption_feature_list), torch.stack(attention_mask_list)
 
+    # generate images and compute CMMD for either train or val items
+    def generate_images_and_cmmd(items):
+        caption_features, attention_masks = build_t5_batch_tensors_from_item_paths([item['path'] for item in items])
+        generated_images = generate_images(
+            pipeline=pipeline,
+            prompt_embeds=caption_features,
+            prompt_attention_mask=attention_masks,
+            batch_size=config.cmmd.image_gen_batch_size,
+            num_inference_steps=config.cmmd.num_inference_steps,
+            width=config.image_size,
+            height=config.image_size,
+            guidance_scale=config.cmmd.guidance_scale,
+        )
+        orig_image_paths = [os.path.join(data_root, item['path']) for item in items]
+        orig_images = [Image.open(image_path) for image_path in orig_image_paths]
+        cmmd_score = get_cmmd_for_images(
+            ref_images=orig_images,
+            eval_images=generated_images,
+            batch_size=config.cmmd.comparison_batch_size,
+            device=accelerator.device,
+        )
+        return generated_images, cmmd_score
+    
+    generated_train_images, train_cmmd_score = generate_images_and_cmmd(train_items)
+    generated_val_images, val_cmmd_score = generate_images_and_cmmd(val_items)
 
-    # compare cmmd between the generated images and the 'real' images
-    # log cmmd value and the images with their captions
+    for tracker in accelerator.trackers:
+        if tracker.name == 'wandb':
+            train_prompts = [item['prompt'] for item in train_items]
+            val_prompts = [item['prompt'] for item in val_items]
+            wandb_train_images = [wandb.Image(
+                image,
+                caption=prompt,
+                ) for image, prompt in zip(generated_train_images, train_prompts)]
+            wandb_val_images = [wandb.Image(
+                image,
+                caption=prompt,
+                ) for image, prompt in zip(generated_val_images, val_prompts)]
+            
+            tracker.log({
+                "generated_train_images": wandb_train_images, 
+                "generated_val_images": wandb_val_images,
+                }, 
+                step=global_step,
+                )
+        else:
+            logger.warn(f"CMMD logging not implemented for {tracker.name}")
+
+    accelerator.log({
+        "train_cmmd_score": train_cmmd_score,
+        "val_cmmd_score": val_cmmd_score,
+        }, step=global_step)
 
 def train(model):
     if config.get('debug_nan', False):
@@ -389,10 +490,10 @@ def train(model):
     global_step = start_step + 1
 
     if config.eval.at_start:
-        log_eval_images(model=model, global_step=global_step)
+        log_eval_images(pipeline=pipeline, global_step=global_step)
 
     if config.cmmd.at_start:
-        pass
+        log_cmmd(pipeline=pipeline, global_step=global_step)
 
     # Now you train the model
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
@@ -477,7 +578,10 @@ def train(model):
             log_validation_loss(model=model, global_step=global_step)
 
         if config.eval.every_n_epochs and epoch % config.eval.every_n_epochs == 0:
-            log_eval_images(model=model, global_step=global_step)
+            log_eval_images(pipeline=pipeline, global_step=global_step)
+        
+        if config.cmmd.every_n_epochs and epoch % config.cmmd.every_n_epochs == 0:
+            log_cmmd(pipeline=pipeline, global_step=global_step)
 
 def save_state(global_step):
     if accelerator.is_main_process:
@@ -601,7 +705,7 @@ if __name__ == '__main__':
     logger.info("Embedding for classifier free guidance")
     max_length = config.model_max_length
     uncond_prompt_embeds, uncond_prompt_attention_mask = get_null_embed(
-        get_path_for_validation_prompt('', max_length), max_length=max_length
+        get_path_for_eval_prompt('', max_length), max_length=max_length
     )
 
     eval_sample_prompts = config.eval.prompts

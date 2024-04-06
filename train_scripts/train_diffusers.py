@@ -96,7 +96,10 @@ def get_null_embed(npz_file, max_length=120):
 def get_path_for_eval_prompt(prompt, max_length):
     hash_object = hashlib.sha256(prompt.encode())
     hex_dig = hash_object.hexdigest()
-    return f'output/tmp/{hex_dig}_{max_length}.pth'
+    tmp_dir = 'output/tmp/'
+    if not os.path.exists(tmp_dir):
+        os.makedirs(tmp_dir)
+    return os.path.join(tmp_dir, f'{hex_dig}_{max_length}.pth')
 
 # embed eval sample prompts and CMMD prompts so we don't need T5 during training.
 # should already have cmmd train and val prompt embeddings in training features

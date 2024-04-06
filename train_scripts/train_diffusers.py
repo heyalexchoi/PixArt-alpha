@@ -247,6 +247,8 @@ def generate_images(
 
 @torch.inference_mode()
 def log_eval_images(pipeline, global_step):
+    if not accelerator.is_main_process:
+        return
     logger.info("Generating eval images... ")
 
     batch_size = config.eval.batch_size
@@ -405,6 +407,8 @@ def log_cmmd(
     if not config.cmmd:
         logger.warning("No CMMD data provided. Skipping CMMD calculation.")
         return
+    if not accelerator.is_main_process:
+        return
     
     data_root = config.data.root
     t5_save_dir = config.data.t5_save_dir
@@ -489,11 +493,20 @@ def train(model):
 
     global_step = start_step + 1
 
-    if config.eval.at_start:
-        log_eval_images(pipeline=pipeline, global_step=global_step)
+    if accelerator.is_main_process:
+        if config.eval.at_start or config.cmmd.at_start:
+            pipeline = get_image_gen_pipeline()
 
-    if config.cmmd.at_start:
-        log_cmmd(pipeline=pipeline, global_step=global_step)
+        if config.eval.at_start:
+            log_eval_images(pipeline=pipeline, global_step=global_step)
+
+        if config.cmmd.at_start:
+            log_cmmd(pipeline=pipeline, global_step=global_step)
+        
+        if pipeline:
+            pipeline.unload()
+            del pipeline
+            flush()
 
     # Now you train the model
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
@@ -577,11 +590,19 @@ def train(model):
         if (config.log_val_loss_epochs and epoch % config.log_val_loss_epochs == 0) or epoch == config.num_epochs:
             log_validation_loss(model=model, global_step=global_step)
 
-        if config.eval.every_n_epochs and epoch % config.eval.every_n_epochs == 0:
-            log_eval_images(pipeline=pipeline, global_step=global_step)
-        
-        if config.cmmd.every_n_epochs and epoch % config.cmmd.every_n_epochs == 0:
-            log_cmmd(pipeline=pipeline, global_step=global_step)
+        should_log_eval = (config.eval.every_n_epochs and epoch % config.eval.every_n_epochs == 0) or epoch == config.num_epochs
+        should_log_cmmd = (config.cmmd.every_n_epochs and epoch % config.cmmd.every_n_epochs == 0) or epoch == config.num_epochs
+
+        if (should_log_eval or should_log_cmmd) and accelerator.is_main_process:
+            pipeline = get_image_gen_pipeline()
+            if should_log_eval:
+                log_eval_images(pipeline=pipeline, global_step=global_step)
+            
+            if should_log_cmmd:
+                log_cmmd(pipeline=pipeline, global_step=global_step)
+            pipeline.unload()
+            del pipeline
+            flush()
 
 def save_state(global_step):
     if accelerator.is_main_process:

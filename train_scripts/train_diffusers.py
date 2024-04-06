@@ -39,6 +39,7 @@ from diffusion.data.datasets.utils import get_t5_feature_path
 from PIL import Image
 import wandb
 from diffusion.utils.cmmd import get_cmmd_for_images
+import json
 
 warnings.filterwarnings("ignore")  # ignore warning
 
@@ -377,25 +378,14 @@ def get_cmmd_train_and_val_samples():
     if not config.cmmd:
         logger.info("No CMMD config provided. Skipping get_cmmd_train_and_val_samples")
         return [], []
-    
-    train_sample_size = config.cmmd.train_sample_size
-    val_sample_size = config.cmmd.val_sample_size
 
     # deterministically sample image-text pairs from train and val sets
-    train_items = dataset.meta_data_clean
-    val_items = val_dataset.meta_data_clean
+    def load_json(file_path):
+        with open(file_path, 'r') as f:
+            return json.load(f)
 
-    if train_sample_size > len(train_items):
-        logger.warning("train_sample_size is larger than the training dataset size. Using the entire training dataset.")
-        train_sample_size = len(train_items)
-    if val_sample_size > len(val_items):
-        logger.warning("val_sample_size is larger than the validation dataset size. Using the entire validation dataset.")
-        val_sample_size = len(val_items)
-    
-    # deterministic sampler
-    sampler = random.Random(42)
-    train_items = sampler.sample(train_items, train_sample_size)
-    val_items = sampler.sample(val_items, val_sample_size)
+    train_items = load_json(config.cmmd.train_sample_json)
+    val_items = load_json(config.cmmd.val_sample_json)
     
     return train_items, val_items
 

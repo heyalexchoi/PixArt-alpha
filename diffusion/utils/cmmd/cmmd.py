@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from .clip import ClipImageEmbeddingModel
 from .mmd import compute_mmd
-from transformers import CLIPImageProcessor
+from transformers import CLIPImageProcessor, CLIPModel
 
 @torch.no_grad()
 def get_embeddings_for_images(
@@ -106,7 +106,7 @@ def _get_image_list(path: str) -> List[str]:
 def compute_embeddings_for_dir(
     img_dir: str,
     embedding_model: CLIPModel,
-    processor: CLIPProcessor,
+    processor: CLIPImageProcessor,
     batch_size: int,
     max_count: int = -1,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",

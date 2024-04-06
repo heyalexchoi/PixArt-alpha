@@ -66,8 +66,18 @@ class InternalDataMS(InternalData):
             meta_data_clean = [item for item in meta_data if item['ratio'] <= 4]
             self.meta_data_clean.extend(meta_data_clean)
             self.img_samples.extend([os.path.join(self.root.replace('InternData', "InternImgs"), item['path']) for item in meta_data_clean])
-            self.txt_feat_samples.extend([get_t5_feature_path(t5_save_dir=t5_save_dir, image_path=item['path']) for item in meta_data_clean])
-            self.vae_feat_samples.extend([get_vae_feature_path(vae_save_root=vae_save_root, image_path=item['path'], signature='ms') for item in meta_data_clean])
+            self.txt_feat_samples.extend([get_t5_feature_path(
+                t5_save_dir=t5_save_dir, 
+                image_path=item['path'],
+                # relative_root_dir=root,
+                max_token_length=max_length,
+                ) for item in meta_data_clean])
+            self.vae_feat_samples.extend([get_vae_feature_path(
+                vae_save_root=vae_save_root, 
+                image_path=item['path'], 
+                # relative_root_dir=root,
+                signature='ms'
+                ) for item in meta_data_clean])
 
         # Set loader and extensions
         if load_vae_feat:

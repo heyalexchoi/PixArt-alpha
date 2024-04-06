@@ -78,8 +78,8 @@ def get_null_embed(npz_file, max_length=120):
         uncond_prompt_embeds = data['uncond_prompt_embeds'].to(accelerator.device)
         uncond_prompt_attention_mask = data['uncond_prompt_attention_mask'].to(accelerator.device)
     else:
-        tokenizer = T5Tokenizer.from_pretrained(args.pipeline_load_from, subfolder="tokenizer")
-        text_encoder = T5EncoderModel.from_pretrained(args.pipeline_load_from, subfolder="text_encoder")
+        tokenizer = T5Tokenizer.from_pretrained(pipeline_load_from, subfolder="tokenizer")
+        text_encoder = T5EncoderModel.from_pretrained(pipeline_load_from, subfolder="text_encoder")
         uncond = tokenizer("", max_length=max_length, padding="max_length", truncation=True, return_tensors="pt")
         uncond_prompt_embeds = text_encoder(uncond.input_ids, attention_mask=uncond.attention_mask)[0]
 
@@ -129,10 +129,10 @@ def generate_t5_prompt_embeddings():
         return
     
     logger.info(f"Embedding {len(prompts)} prompts...")    
-    # logger.info(f"Loading T5 text encoder and tokenizer from {args.pipeline_load_from} ...")
+    # logger.info(f"Loading T5 text encoder and tokenizer from {pipeline_load_from} ...")
     pipeline = get_text_encoding_pipeline()
-    # tokenizer = T5Tokenizer.from_pretrained(args.pipeline_load_from, subfolder="tokenizer")
-    # text_encoder = T5EncoderModel.from_pretrained(args.pipeline_load_from, subfolder="text_encoder").to(accelerator.device)
+    # tokenizer = T5Tokenizer.from_pretrained(pipeline_load_from, subfolder="tokenizer")
+    # text_encoder = T5EncoderModel.from_pretrained(pipeline_load_from, subfolder="text_encoder").to(accelerator.device)
     
     for i in range(0, len(prompts), batch_size):
         batch_prompts = prompts[i:i+batch_size]
@@ -170,9 +170,9 @@ def generate_t5_prompt_embeddings():
 
 def get_text_encoding_pipeline():
     """Get pipeline with only text encoding components"""
-    logger.info(f"Loading T5 text encoder and tokenizer from {args.pipeline_load_from} ...")
+    logger.info(f"Loading T5 text encoder and tokenizer from {pipeline_load_from} ...")
     pipeline = PixArtAlphaPipeline.from_pretrained(
-            args.pipeline_load_from,
+            pipeline_load_from,
             vae=None,
             transformer=None,
             scheduler=None,
@@ -185,12 +185,12 @@ def get_image_gen_pipeline(
         transformer=None,
     ):
     """Get pipeline with image generation components, without text encoding. Optionally load a passed in transformer"""
-    logger.info(f"Getting pipeline {args.pipeline_load_from} ...")
+    logger.info(f"Getting pipeline {pipeline_load_from} ...")
     if not transformer:
-        transformer = PixArtAlphaPipeline.load_transformer(args.pipeline_load_from)
+        transformer = PixArtAlphaPipeline.load_transformer(pipeline_load_from)
                 
     pipeline = PixArtAlphaPipeline.from_pretrained(
-            args.pipeline_load_from,
+            pipeline_load_from,
             transformer=transformer,
             tokenizer=None,
             text_encoder=None,
@@ -413,7 +413,12 @@ def log_cmmd(
         caption_feature_list = []
         attention_mask_list = []
         for item_path in paths:
-            npz_path = get_t5_feature_path(t5_save_dir=t5_save_dir, image_path=item_path)
+            npz_path = get_t5_feature_path(
+                t5_save_dir=t5_save_dir, 
+                image_path=item_path,
+                relative_root_dir=data_root,
+                max_token_length=max_length,
+                )
             embed_dict = np.load(npz_path)
             caption_feature = torch.from_numpy(embed_dict['caption_feature'])
             attention_mask = torch.from_numpy(embed_dict['attention_mask'])
@@ -612,23 +617,13 @@ def parse_args():
     parser.add_argument('--local-rank', type=int, default=-1)
     parser.add_argument('--local_rank', type=int, default=-1)
     parser.add_argument('--debug', action='store_true')
-    parser.add_argument("--pipeline_load_from", default='output/pretrained_models/pixart_omega_sdxl_256px_diffusers_from512', type=str, help="path for loading text_encoder, tokenizer and vae")
     parser.add_argument(
         "--report_to",
         type=str,
-        default="tensorboard",
+        default="wandb",
         help=(
             'The integration to report the results and logs to. Supported platforms are `"tensorboard"`'
             ' (default), `"wandb"` and `"comet_ml"`. Use `"all"` to report to all integrations.'
-        ),
-    )
-    parser.add_argument(
-        "--tracker_project_name",
-        type=str,
-        default="text2image-pixart-omega",
-        help=(
-            "The `project_name` argument passed to Accelerator.init_trackers for"
-            " more information see https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
         ),
     )
     parser.add_argument("--loss_report_name", type=str, default="loss")
@@ -640,6 +635,8 @@ def validate_config(config):
         raise ValueError("work_dir is not defined in the config file")
     if not config.eval:
         config.eval = {}
+    if not config.pipeline_load_from:
+        raise ValueError('pipeline_load_from is not defined in the config file')
 
 if __name__ == '__main__':
     args = parse_args()
@@ -658,7 +655,9 @@ if __name__ == '__main__':
 
     validate_config(config)
 
+    pipeline_load_from = config.pipeline_load_from
     load_vae_feat = config.data.load_vae_feat
+    tracker_project_name = config.tracker_project_name
 
     os.umask(0o000)
     os.makedirs(config.work_dir, exist_ok=True)
@@ -844,8 +843,8 @@ if __name__ == '__main__':
 
     if accelerator.is_main_process:
         tracker_config = dict(vars(config))
-        accelerator.init_trackers(f"tb_{timestamp}_{args.tracker_project_name}")
-        logger.info(f"Training tracker at tb_{timestamp}_{args.tracker_project_name}")
+        accelerator.init_trackers(f"tb_{timestamp}_{tracker_project_name}")
+        logger.info(f"Training tracker at tb_{timestamp}_{tracker_project_name}")
 
     start_epoch = 0
     start_step = 0

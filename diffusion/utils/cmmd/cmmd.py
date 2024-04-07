@@ -66,7 +66,7 @@ def get_cmmd_for_images(
         num_workers=num_workers,
         device=device,
     )
-    clip_model.unload()
+    
     return compute_mmd(ref_embs, eval_embs)
 
 class ImageDataset(Dataset):
@@ -88,7 +88,9 @@ class ImageDataset(Dataset):
         image = self.images[idx]
         if isinstance(image, str):
             image = Image.open(image)
-        return self.processor(images=image, return_tensors="pt")
+        processed_batch = self.processor(images=image, return_tensors="pt")
+        processed_image = processed_batch['pixel_values'].squeeze(0)
+        return processed_image
 
 # written by claude as adaptation and not tested
 def _get_image_list(path: str) -> List[str]:

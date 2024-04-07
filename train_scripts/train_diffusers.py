@@ -264,10 +264,13 @@ def generate_images(
             negative_prompt_attention_mask=negative_prompt_attention_mask,
             # there is a problem with pipeline that does not properly match tensor types between latent generation and vae decoding
             output_type="latent",
+            # resolution binning seems to prevent generation of images below 1024. maybe put this back when i start doing multires.
+            use_resolution_binning=False,
         ).images
-        # import pdb; pdb.set_trace()
+        
         # for now decode myself
-        batch_images = pipeline.vae.decode((batch_image_latents / pipeline.vae.config.scaling_factor).to(weight_dtype), return_dict=False)[0]
+        # batch_images = pipeline.vae.decode((batch_image_latents / pipeline.vae.config.scaling_factor).to(weight_dtype), return_dict=False)[0]
+        batch_images = pipeline.vae.decode(batch_image_latents.to(weight_dtype), return_dict=False)[0]
         batch_images = pipeline.image_processor.postprocess(batch_images, output_type="pil")
         images.extend(batch_images)
 
@@ -411,8 +414,8 @@ def get_cmmd_train_and_val_samples():
         with open(file_path, 'r') as f:
             return json.load(f)
     
-    train_items = load_json(os.path.join(config.data_root, config.cmmd.train_sample_json))
-    val_items = load_json(os.path.join(config.data_root, config.cmmd.val_sample_json))
+    train_items = load_json(os.path.join(config.data.root, config.cmmd.train_sample_json))
+    val_items = load_json(os.path.join(config.data.root, config.cmmd.val_sample_json))
     
     return train_items, val_items
 
@@ -471,7 +474,7 @@ def log_cmmd(
         cmmd_score = get_cmmd_for_images(
             ref_images=orig_images,
             eval_images=generated_images,
-            batch_size=config.cmmd.comparison_batch_size,
+            batch_size=config.cmmd.clip_batch_size,
             device=accelerator.device,
         )
         return generated_images, cmmd_score

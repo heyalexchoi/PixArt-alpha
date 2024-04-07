@@ -25,18 +25,13 @@ class ClipImageEmbeddingModel:
         """Computes CLIP embeddings for the given PIL images.
 
         Args:
-            images: A list of PIL images.
+            images: A list of PIL images. should use `preprocess=True`.
+            OR A tensor of shape (batch_size, 3, height, width) representing the images.
 
         Returns:
             Embedding tensor of shape (batch_size, embedding_width).
         """
         if preprocess:
             images = self.processor(images=images, return_tensors="pt")
-        outputs = self.model(**images)
+        outputs = self.model(images)
         return outputs.image_embeds
-    
-    def unload(self):
-        # Unload the model from GPU memory
-        self.model.to("cpu")
-        del self.model
-        torch.cuda.empty_cache()

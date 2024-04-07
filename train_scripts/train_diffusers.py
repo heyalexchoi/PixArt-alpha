@@ -6,7 +6,6 @@ import time
 import types
 import warnings
 from pathlib import Path
-import random
 import hashlib
 
 current_file_path = Path(__file__).resolve()
@@ -19,17 +18,15 @@ import torch
 import torch.nn as nn
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.utils import DistributedType
-from copy import deepcopy
 from diffusers import AutoencoderKL, Transformer2DModel, PixArtAlphaPipeline, DPMSolverMultistepScheduler
 from mmcv.runner import LogBuffer
 from packaging import version
 from torch.utils.data import RandomSampler
-from transformers import T5Tokenizer, T5EncoderModel
 
 from diffusion import IDDPM
 from diffusion.data.builder import build_dataset, build_dataloader, set_data_root
 from diffusion.utils.data_sampler import AspectRatioBatchSampler, BalancedAspectRatioBatchSampler
-from diffusion.utils.dist_utils import get_world_size, clip_grad_norm_, flush
+from diffusion.utils.dist_utils import get_world_size, clip_grad_norm_, flush, synchronize
 from diffusion.utils.logger import get_root_logger, rename_file_with_creation_time
 from diffusion.utils.lr_scheduler import build_lr_scheduler
 from diffusion.utils.misc import set_random_seed, read_config, init_random_seed, DebugUnderflowOverflow
@@ -43,6 +40,10 @@ import json
 
 warnings.filterwarnings("ignore")  # ignore warning
 
+def wait_for_everyone():
+    # possible issue with accelerator.wait_for_everyone() breaking on linux kernel < 5.5
+    # https://github.com/huggingface/accelerate/issues/1929
+    synchronize()
 
 def set_fsdp_env():
     os.environ["ACCELERATE_USE_FSDP"] = 'true'
@@ -255,7 +256,7 @@ def generate_images(
 
 @torch.inference_mode()
 def log_eval_images(pipeline, global_step):
-    accelerator.wait_for_everyone()
+    wait_for_everyone()
     if not accelerator.is_main_process:
         return
     logger.info("Generating eval images... ")
@@ -405,7 +406,7 @@ def log_cmmd(
     if not config.cmmd:
         logger.warning("No CMMD data provided. Skipping CMMD calculation.")
         return
-    accelerator.wait_for_everyone()
+    wait_for_everyone()
     if not accelerator.is_main_process:
         return
     
@@ -621,7 +622,7 @@ def train(model):
             flush()
 
 def save_state(global_step):
-    accelerator.wait_for_everyone()
+    wait_for_everyone()
     if accelerator.is_main_process:
         save_path = os.path.join(os.path.join(config.work_dir, 'checkpoints'), f"checkpoint-{global_step}")
         os.umask(0o000)

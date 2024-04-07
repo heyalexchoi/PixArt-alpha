@@ -233,6 +233,7 @@ def generate_images(
     caption embeddings should be 
     """
     logger.info(f"Generating {len(prompt_embeds)} images...")    
+    logger.info(f"width {width} height {height}")    
     device = accelerator.device
     generator = torch.Generator(device=device).manual_seed(seed)
     images = []
@@ -240,11 +241,16 @@ def generate_images(
     for i in range(0, len(prompt_embeds), batch_size):
         batch_prompt_embeds = prompt_embeds[i:i+batch_size].to(device)
         batch_prompt_attention_mask = prompt_attention_mask[i:i+batch_size].to(device)
+        # duplicate null embeds to match batch size
+        batch_size = batch_prompt_embeds.size(0)  # Get the batch size from batch_prompt_embeds
+        negative_prompt_embeds = uncond_prompt_embeds.repeat(batch_size, 1, 1)
+        negative_prompt_attention_mask = uncond_prompt_attention_mask.repeat(batch_size, 1)
+
         # prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask
         # caption_embs = batch_caption_embeds['caption_feature'].to(accelerator.device)
         # emb_masks = batch_caption_embeds['attention_mask'].to(accelerator.device)
 
-        batch_images = pipeline(
+        batch_image_latents = pipeline(
             width=width,
             height=height,
             num_inference_steps=num_inference_steps,
@@ -254,9 +260,15 @@ def generate_images(
             prompt_embeds=batch_prompt_embeds,
             prompt_attention_mask=batch_prompt_attention_mask,
             negative_prompt=None,
-            negative_prompt_embeds=uncond_prompt_embeds,
-            negative_prompt_attention_mask=uncond_prompt_attention_mask,
+            negative_prompt_embeds=negative_prompt_embeds,
+            negative_prompt_attention_mask=negative_prompt_attention_mask,
+            # there is a problem with pipeline that does not properly match tensor types between latent generation and vae decoding
+            output_type="latent",
         ).images
+        # import pdb; pdb.set_trace()
+        # for now decode myself
+        batch_images = pipeline.vae.decode((batch_image_latents / pipeline.vae.config.scaling_factor).to(weight_dtype), return_dict=False)[0]
+        batch_images = pipeline.image_processor.postprocess(batch_images, output_type="pil")
         images.extend(batch_images)
 
     return images
@@ -270,7 +282,7 @@ def log_eval_images(pipeline, global_step):
     logger.info("Generating eval images... ")
 
     batch_size = config.eval.batch_size
-    seed = config.eval.seed
+    seed = config.eval.get('seed', 0)
     guidance_scale = config.eval.guidance_scale
 
     # transformer = accelerator.unwrap_model(model)
@@ -307,37 +319,40 @@ def log_eval_images(pipeline, global_step):
     flush()
 
     for prompt, image in zip(eval_sample_prompts, images):
-        image_logs.append({"validation_prompt": prompt, "images": image})
+        image_logs.append({"prompt": prompt, "image": image})
 
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
-            for log in image_logs:
-                images = log["images"]
-                validation_prompt = log["validation_prompt"]
-                formatted_images = []
-                for image in images:
-                    formatted_images.append(np.asarray(image))
+            logger.warn(f"image logging not implemented for {tracker.name}")
+            # for log in image_logs:
+            #     images = log["images"]
+            #     validation_prompt = log["validation_prompt"]
+            #     formatted_images = []
+            #     for image in images:
+            #         formatted_images.append(np.asarray(image))
 
-                formatted_images = np.stack(formatted_images)
+            #     formatted_images = np.stack(formatted_images)
 
-                tracker.writer.add_images(
-                    validation_prompt, 
-                    formatted_images, 
-                    global_step, 
-                    dataformats="NHWC"
-                )
+            #     tracker.writer.add_images(
+            #         validation_prompt, 
+            #         formatted_images, 
+            #         global_step, 
+            #         dataformats="NHWC"
+            #     )
         elif tracker.name == "wandb":
             
             formatted_images = []
 
-            for log in image_logs:
-                images = log["images"]
-                validation_prompt = log["validation_prompt"]
-                for image in images:
-                    image = wandb.Image(image, caption=validation_prompt)
-                    formatted_images.append(image)
-
-            tracker.log({"eval_images": formatted_images})
+            for image_log in image_logs:
+                image = image_log['image']
+                prompt = image_log['prompt']
+                image = wandb.Image(image, caption=prompt)
+                formatted_images.append(image)
+                    
+            tracker.log(
+                {"eval_images": formatted_images},
+                step=global_step,
+                )
         else:
             logger.warn(f"image logging not implemented for {tracker.name}")
 
@@ -395,12 +410,11 @@ def get_cmmd_train_and_val_samples():
     def load_json(file_path):
         with open(file_path, 'r') as f:
             return json.load(f)
-
-    train_items = load_json(config.cmmd.train_sample_json)
-    val_items = load_json(config.cmmd.val_sample_json)
+    
+    train_items = load_json(os.path.join(config.data_root, config.cmmd.train_sample_json))
+    val_items = load_json(os.path.join(config.data_root, config.cmmd.val_sample_json))
     
     return train_items, val_items
-
 
 def log_cmmd(
         pipeline,

@@ -80,6 +80,7 @@ def get_null_embed(path, max_length=120):
         encoded_null, encoded_null_attention_mask, _, _ = encoded_null_tuple
     else:
         pipeline = get_text_encoding_pipeline()
+        logger.info('encoding null embed')
         encoded_null_tuple = pipeline.encode_prompt(
             prompt="",
             device=accelerator.device,
@@ -107,6 +108,7 @@ def get_path_for_eval_prompt(prompt, max_length):
 # should already have cmmd train and val prompt embeddings in training features
 @torch.inference_mode()
 def generate_t5_prompt_embeddings():
+    logger.info('generating t5 prompt embeddings...')
     batch_size = config.t5.batch_size
     # cmmd_train_items, cmmd_val_items = get_cmmd_train_and_val_samples()
     # if not eval_sample_prompts and not cmmd_train_items and not cmmd_val_items:
@@ -178,12 +180,16 @@ def get_text_encoding_pipeline():
     logger.info(f"Loading T5 text encoder and tokenizer from {pipeline_load_from} ...")
     pipeline = PixArtAlphaPipeline.from_pretrained(
             pipeline_load_from,
-            vae=None,
+            # vae=None,
             transformer=None,
             scheduler=None,
             torch_dtype=weight_dtype,
-            device=accelerator.device,
+            # device=accelerator.device,
+            # device_map="auto"
         )
+    pipeline = pipeline.to(device=accelerator.device)
+    del pipeline.vae
+    flush()
     return pipeline
 
 def get_image_gen_pipeline(
@@ -200,8 +206,11 @@ def get_image_gen_pipeline(
             tokenizer=None,
             text_encoder=None,
             torch_dtype=weight_dtype,
-            device=accelerator.device,
+            device_map="auto"
+            # device=accelerator.device,
+            # torch_dtype=weight_dtype,
         )
+    pipeline = pipeline.to(device=accelerator.device)
     # pipeline.set_progress_bar_config(disable=True)
     
     return pipeline
@@ -410,7 +419,7 @@ def log_cmmd(
     train_items, val_items = get_cmmd_train_and_val_samples()
 
     # generate images using the text captions
-    logger.info("Generating images using the text captions...")
+    logger.info("Generating CMMD images using the text captions...")
    
     # extract saved t5 features and return 2 item tuple
     # of batch tensors for prompt embeds and attention masks
@@ -485,6 +494,7 @@ def log_cmmd(
         }, step=global_step)
 
 def train(model):
+    logger.info('starting training...')
     if config.get('debug_nan', False):
         DebugUnderflowOverflow(model)
         logger.info('NaN debugger registered. Start to detect overflow during training.')
@@ -663,6 +673,7 @@ if __name__ == '__main__':
     pipeline_load_from = config.pipeline_load_from
     load_vae_feat = config.data.load_vae_feat
     tracker_project_name = config.tracker_project_name
+    max_length = config.model_max_length
 
     os.umask(0o000)
     os.makedirs(config.work_dir, exist_ok=True)
@@ -716,18 +727,7 @@ if __name__ == '__main__':
     pred_sigma = getattr(config, 'pred_sigma', True)
     learn_sigma = getattr(config, 'learn_sigma', True) and pred_sigma
 
-    # Create for unconditional prompt embedding for classifier free guidance
-    logger.info("Embedding for classifier free guidance")
-    max_length = config.model_max_length
-    uncond_prompt_embeds, uncond_prompt_attention_mask = get_null_embed(
-        get_path_for_eval_prompt('', max_length), max_length=max_length
-    )
-
     eval_sample_prompts = config.eval.prompts
-
-    # preparing embeddings for visualization. We put it here for saving GPU memory
-    if accelerator.is_main_process:
-        generate_t5_prompt_embeddings()
 
     # build models
     train_diffusion = IDDPM(str(config.train_sampling_steps), learn_sigma=learn_sigma, pred_sigma=pred_sigma, snr=config.snr_loss)
@@ -744,6 +744,16 @@ if __name__ == '__main__':
         weight_dtype = torch.float16
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
+
+    # preparing embeddings for visualization. We put it here for saving GPU memory
+    if accelerator.is_main_process:
+        generate_t5_prompt_embeddings()
+
+    # Create for unconditional prompt embedding for classifier free guidance
+    logger.info("Embedding for classifier free guidance")
+    uncond_prompt_embeds, uncond_prompt_attention_mask = get_null_embed(
+        get_path_for_eval_prompt('', max_length), max_length=max_length
+    )
 
     # 11. Enable optimizations
     # model.enable_xformers_memory_efficient_attention()    # not available for now

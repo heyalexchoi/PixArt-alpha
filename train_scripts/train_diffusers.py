@@ -177,26 +177,19 @@ def generate_t5_prompt_embeddings():
 
 def get_text_encoding_pipeline():
     """Get pipeline with only text encoding components"""
-    logger.info(f"Loading T5 text encoder and tokenizer from {pipeline_load_from} ...")
+    logger.info(f"Loading T5 text encoder and tokenizer from {pipeline_load_from} to device {accelerator.device}...")
     pipeline = PixArtAlphaPipeline.from_pretrained(
             pipeline_load_from,
-            # vae=None,
             transformer=None,
-            scheduler=None,
             torch_dtype=weight_dtype,
-            # device=accelerator.device,
-            # device_map="auto"
-        )
-    pipeline = pipeline.to(device=accelerator.device)
-    del pipeline.vae
-    flush()
+        ).to(device=accelerator.device)
     return pipeline
 
 def get_image_gen_pipeline(
         transformer=None,
     ):
     """Get pipeline with image generation components, without text encoding. Optionally load a passed in transformer"""
-    logger.info(f"Getting pipeline {pipeline_load_from} ...")
+    logger.info(f"Loading image gen pipeline {pipeline_load_from} to device: {accelerator.device}...")
     if not transformer:
         transformer = PixArtAlphaPipeline.load_transformer(pipeline_load_from)
                 
@@ -206,11 +199,11 @@ def get_image_gen_pipeline(
             tokenizer=None,
             text_encoder=None,
             torch_dtype=weight_dtype,
-            device_map="auto"
+            # device_map="auto"
             # device=accelerator.device,
             # torch_dtype=weight_dtype,
-        )
-    pipeline = pipeline.to(device=accelerator.device)
+        ).to(device=accelerator.device)
+    
     # pipeline.set_progress_bar_config(disable=True)
     
     return pipeline

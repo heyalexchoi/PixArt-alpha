@@ -27,7 +27,7 @@ from diffusion.utils.misc import SimpleTimer
 from diffusion.utils.data_sampler import AspectRatioBatchSampler
 from diffusion.data.builder import DATASETS
 from diffusion.data import ASPECT_RATIO_512, ASPECT_RATIO_1024, ASPECT_RATIO_256
-from diffusion.data.datasets.utils import get_vae_feature_path, get_t5_feature_path
+from diffusion.data.datasets.utils import get_vae_feature_path, get_t5_feature_path, get_vae_signature
 from diffusion.utils.dist_utils import flush
 
 from concurrent.futures import ProcessPoolExecutor, wait, as_completed
@@ -39,11 +39,6 @@ def get_closest_ratio(height: float, width: float, ratios: dict):
     aspect_ratio = height / width
     closest_ratio = min(ratios.keys(), key=lambda ratio: abs(float(ratio) - aspect_ratio))
     return ratios[closest_ratio], float(closest_ratio)
-
-def get_vae_signature(resolution, is_multiscale):
-    assert resolution in [256, 512, 1024]
-    first_part = 'multiscale' if is_multiscale else 'cropped'
-    return f"{first_part}-{resolution}"
 
 # VAE feature extraction
 @DATASETS.register_module()

@@ -75,8 +75,10 @@ class InternalDataMS(InternalData):
             self.vae_feat_samples.extend([get_vae_feature_path(
                 vae_save_root=vae_save_root, 
                 image_path=item['path'], 
-                # relative_root_dir=root,
-                signature='ms'
+                signature=get_vae_signature(
+                    resolution=resolution, 
+                    is_multiscale=True
+                ),
                 ) for item in meta_data_clean])
 
         # Set loader and extensions

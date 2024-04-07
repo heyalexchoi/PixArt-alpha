@@ -126,3 +126,8 @@ def get_feature_path(feature_dir, image_path, extension, relative_root_dir):
     # Return the transformed path as a safe filename with the new extension
     return os.path.join(feature_dir, safe_name_no_ext + extension)
     
+def get_vae_signature(resolution, is_multiscale):
+    assert resolution in [256, 512, 1024]
+    first_part = 'multiscale' if is_multiscale else 'cropped'
+    return f"{first_part}-{resolution}"
+

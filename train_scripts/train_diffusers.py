@@ -490,6 +490,7 @@ def train(model):
     global_step = start_step + 1
 
     if accelerator.is_main_process:
+        pipeline = None
         if config.eval.at_start or config.cmmd.at_start:
             model = prepare_for_inference(model)
             pipeline = get_image_gen_pipeline(transformer=model)

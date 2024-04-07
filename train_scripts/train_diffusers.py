@@ -90,11 +90,6 @@ def get_null_embed(path, max_length=120):
             device=accelerator.device,
             max_sequence_length=max_length,
         )
-        # tokenizer = T5Tokenizer.from_pretrained(pipeline_load_from, subfolder="tokenizer")
-        # text_encoder = T5EncoderModel.from_pretrained(pipeline_load_from, subfolder="text_encoder")
-        # uncond = tokenizer("", max_length=max_length, padding="max_length", truncation=True, return_tensors="pt")
-        # uncond_prompt_embeds = text_encoder(uncond.input_ids, attention_mask=uncond.attention_mask)[0]
-
         torch.save(encoded_null_tuple, path)
         encoded_null, encoded_null_attention_mask, _, _ = encoded_null_tuple
 
@@ -114,14 +109,6 @@ def get_path_for_eval_prompt(prompt, max_length):
 def generate_t5_prompt_embeddings():
     logger.info('generating t5 prompt embeddings...')
     batch_size = config.t5.batch_size
-    # cmmd_train_items, cmmd_val_items = get_cmmd_train_and_val_samples()
-    # if not eval_sample_prompts and not cmmd_train_items and not cmmd_val_items:
-    #     logger.info("No evaluation prompts, or CMMD sample prompts provided. Skipping prompt embedding generation.")
-    #     return
-    
-    # prompts = eval_sample_prompts + \
-    #     [item['prompt'] for item in cmmd_train_items] + \
-    #     [item['prompt'] for item in cmmd_val_items]
     prompts = eval_sample_prompts
     
     saved_prompts = []
@@ -140,10 +127,7 @@ def generate_t5_prompt_embeddings():
         return
     
     logger.info(f"Embedding {len(prompts)} prompts...")    
-    # logger.info(f"Loading T5 text encoder and tokenizer from {pipeline_load_from} ...")
     pipeline = get_text_encoding_pipeline()
-    # tokenizer = T5Tokenizer.from_pretrained(pipeline_load_from, subfolder="tokenizer")
-    # text_encoder = T5EncoderModel.from_pretrained(pipeline_load_from, subfolder="text_encoder").to(accelerator.device)
     
     for i in range(0, len(prompts), batch_size):
         batch_prompts = prompts[i:i+batch_size]
@@ -153,25 +137,10 @@ def generate_t5_prompt_embeddings():
             device=accelerator.device,
             max_sequence_length=max_length,
         )
-        # caption_tokens = tokenizer(
-        #     batch_prompts, 
-        #     max_length=max_length, 
-        #     padding="max_length", 
-        #     truncation=True,
-        #     return_tensors="pt",
-        # ).to(accelerator.device)
-        
-        # caption_embeds = text_encoder(
-        #     caption_tokens.input_ids, 
-        #     attention_mask=caption_tokens.attention_mask,
-        # )[0]
 
         # Assuming you are modifying to save each prompt's data separately
         for j, prompt in enumerate(batch_prompts):
             # Extract embeddings and attention mask for the j-th item in the batch
-            # single_caption_emb = prompt_embeds[j, :, :].unsqueeze(0)  # Add batch dimension back
-            # single_emb_mask = prompt_attention_mask[j, :].unsqueeze(0)  # Add batch dimension back
-            # encoded_prompt = batch_embeddings[j, :, :].unsqueeze(0)
             prompt_embeds = batch_prompt_embeds[j, :, :] # dont think I need batch dim. extract features do not have batch dim
             prompt_attention_mask = batch_prompt_attention_mask[j, :] # dont think I need batch dim. extract features do not have batch dim
             # Generate a unique path for each prompt
@@ -197,22 +166,17 @@ def get_image_gen_pipeline(
         transformer=None,
     ):
     """Get pipeline with image generation components, without text encoding. Optionally load a passed in transformer"""
-    logger.info(f"Loading image gen pipeline {pipeline_load_from} to device: {accelerator.device}...")
+    logger.info(f"Loading image gen pipeline {pipeline_load_from} to device: {accelerator.device} and dtype {weight_dtype}...")
     if not transformer:
         transformer = PixArtAlphaPipeline.load_transformer(pipeline_load_from)
-                
+    # does this have to be set to weight_dtype?
     pipeline = PixArtAlphaPipeline.from_pretrained(
             pipeline_load_from,
             transformer=transformer,
             tokenizer=None,
             text_encoder=None,
             torch_dtype=weight_dtype,
-            # device_map="auto"
-            # device=accelerator.device,
-            # torch_dtype=weight_dtype,
         ).to(device=accelerator.device)
-    
-    # pipeline.set_progress_bar_config(disable=True)
     
     return pipeline
 
@@ -246,11 +210,7 @@ def generate_images(
         negative_prompt_embeds = uncond_prompt_embeds.repeat(batch_size, 1, 1)
         negative_prompt_attention_mask = uncond_prompt_attention_mask.repeat(batch_size, 1)
 
-        # prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask
-        # caption_embs = batch_caption_embeds['caption_feature'].to(accelerator.device)
-        # emb_masks = batch_caption_embeds['attention_mask'].to(accelerator.device)
-
-        batch_image_latents = pipeline(
+        batch_images = pipeline(
             width=width,
             height=height,
             num_inference_steps=num_inference_steps,
@@ -263,15 +223,15 @@ def generate_images(
             negative_prompt_embeds=negative_prompt_embeds,
             negative_prompt_attention_mask=negative_prompt_attention_mask,
             # there is a problem with pipeline that does not properly match tensor types between latent generation and vae decoding
-            output_type="latent",
+            # output_type="latent",
             # resolution binning seems to prevent generation of images below 1024. maybe put this back when i start doing multires.
-            use_resolution_binning=False,
+            # use_resolution_binning=False,
         ).images
         
         # for now decode myself
         # batch_images = pipeline.vae.decode((batch_image_latents / pipeline.vae.config.scaling_factor).to(weight_dtype), return_dict=False)[0]
-        batch_images = pipeline.vae.decode(batch_image_latents.to(weight_dtype), return_dict=False)[0]
-        batch_images = pipeline.image_processor.postprocess(batch_images, output_type="pil")
+        # batch_images = pipeline.vae.decode(batch_image_latents.to(weight_dtype), return_dict=False)[0]
+        # batch_images = pipeline.image_processor.postprocess(batch_images, output_type="pil")
         images.extend(batch_images)
 
     return images
@@ -757,13 +717,6 @@ if __name__ == '__main__':
 
     eval_sample_prompts = config.eval.prompts
 
-    # build models
-    train_diffusion = IDDPM(str(config.train_sampling_steps), learn_sigma=learn_sigma, pred_sigma=pred_sigma, snr=config.snr_loss)
-    model = Transformer2DModel.from_pretrained(config.load_from, subfolder="transformer").train()
-    logger.info(f"{model.__class__.__name__} Model Parameters: {sum(p.numel() for p in model.parameters()):,}")
-    logger.info(f"lewei scale: {model.pos_embed.interpolation_scale} base size: {model.pos_embed.base_size}")
-    # model_ema = deepcopy(model).eval()
-
     # 9. Handle mixed precision and device placement
     # For mixed precision training we cast all non-trainable weigths to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
@@ -772,6 +725,17 @@ if __name__ == '__main__':
         weight_dtype = torch.float16
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
+
+    # build models
+    train_diffusion = IDDPM(str(config.train_sampling_steps), learn_sigma=learn_sigma, pred_sigma=pred_sigma, snr=config.snr_loss)
+    model = Transformer2DModel.from_pretrained(
+        config.load_from, 
+        subfolder="transformer",
+        torch_dtype=weight_dtype,
+    ).train()
+    logger.info(f"{model.__class__.__name__} Model Parameters: {sum(p.numel() for p in model.parameters()):,}")
+    logger.info(f"lewei scale: {model.pos_embed.interpolation_scale} base size: {model.pos_embed.base_size}")
+    # model_ema = deepcopy(model).eval()
 
     # preparing embeddings for visualization. We put it here for saving GPU memory
     if accelerator.is_main_process:

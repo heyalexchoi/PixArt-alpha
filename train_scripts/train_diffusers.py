@@ -77,7 +77,10 @@ def get_null_embed(path, max_length=120):
     if not accelerator.is_main_process:
         return
     if os.path.exists(path) and (path.endswith('.pth')):
-        encoded_null_tuple = torch.load(path)
+        encoded_null_tuple = torch.load(
+            path,
+            map_location=accelerator.device,
+        )
         encoded_null, encoded_null_attention_mask, _, _ = encoded_null_tuple
     else:
         pipeline = get_text_encoding_pipeline()
@@ -145,7 +148,7 @@ def generate_t5_prompt_embeddings():
     for i in range(0, len(prompts), batch_size):
         batch_prompts = prompts[i:i+batch_size]
         # returns tuple: prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask
-        batch_embeddings = pipeline.encode_prompt(
+        batch_prompt_embeds, batch_prompt_attention_mask, _, _ = pipeline.encode_prompt(
             prompt=batch_prompts,
             device=accelerator.device,
             max_sequence_length=max_length,
@@ -169,10 +172,14 @@ def generate_t5_prompt_embeddings():
             # single_caption_emb = prompt_embeds[j, :, :].unsqueeze(0)  # Add batch dimension back
             # single_emb_mask = prompt_attention_mask[j, :].unsqueeze(0)  # Add batch dimension back
             # encoded_prompt = batch_embeddings[j, :, :].unsqueeze(0)
-            encoded_prompt = batch_embeddings[j, :, :] # dont think I need batch dim. extract features do not have batch dim
+            prompt_embeds = batch_prompt_embeds[j, :, :] # dont think I need batch dim. extract features do not have batch dim
+            prompt_attention_mask = batch_prompt_attention_mask[j, :] # dont think I need batch dim. extract features do not have batch dim
             # Generate a unique path for each prompt
             save_path = get_path_for_eval_prompt(prompt, max_length)
-            torch.save(encoded_prompt, save_path)
+            torch.save({
+                'prompt_embeds': prompt_embeds,
+                'prompt_attention_mask': prompt_attention_mask,
+            }, save_path)
                 
     flush()
 
@@ -226,12 +233,13 @@ def generate_images(
     caption embeddings should be 
     """
     logger.info(f"Generating {len(prompt_embeds)} images...")    
-    generator = torch.Generator(device=accelerator.device).manual_seed(seed)
+    device = accelerator.device
+    generator = torch.Generator(device=device).manual_seed(seed)
     images = []
     # Generate images in batches
     for i in range(0, len(prompt_embeds), batch_size):
-        batch_prompt_embeds = prompt_embeds[i:i+batch_size]
-        batch_prompt_attention_mask = prompt_attention_mask[i:i+batch_size]
+        batch_prompt_embeds = prompt_embeds[i:i+batch_size].to(device)
+        batch_prompt_attention_mask = prompt_attention_mask[i:i+batch_size].to(device)
         # prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask
         # caption_embs = batch_caption_embeds['caption_feature'].to(accelerator.device)
         # emb_masks = batch_caption_embeds['attention_mask'].to(accelerator.device)
@@ -274,17 +282,12 @@ def log_eval_images(pipeline, global_step):
     images = []
     # latents = []
     for prompt in eval_sample_prompts:
-        (
-            prompt_embeds,
-            prompt_attention_mask, 
-            _, 
-            _
-         ) = torch.load(
+        prompt_embed_dict = torch.load(
                 get_path_for_eval_prompt(prompt, max_length),
                 map_location='cpu'
                 )
-        prompt_embeds_list.append(prompt_embeds)
-        prompt_attention_mask_list.append(prompt_attention_mask)
+        prompt_embeds_list.append(prompt_embed_dict['prompt_embeds'])
+        prompt_attention_mask_list.append(prompt_embed_dict['prompt_attention_mask'])
     
     prompt_embeds = torch.stack(prompt_embeds_list)
     prompt_attention_mask = torch.stack(prompt_attention_mask_list)
@@ -490,7 +493,7 @@ def log_cmmd(
         }, step=global_step)
 
 def prepare_for_inference(model):
-    model = accelerator.unwrap(model)
+    model = accelerator.unwrap_model(model)
     model.eval()
     return model
 

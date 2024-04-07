@@ -255,6 +255,7 @@ def generate_images(
 
 @torch.inference_mode()
 def log_eval_images(pipeline, global_step):
+    accelerator.wait_for_everyone()
     if not accelerator.is_main_process:
         return
     logger.info("Generating eval images... ")
@@ -404,6 +405,7 @@ def log_cmmd(
     if not config.cmmd:
         logger.warning("No CMMD data provided. Skipping CMMD calculation.")
         return
+    accelerator.wait_for_everyone()
     if not accelerator.is_main_process:
         return
     
@@ -486,6 +488,16 @@ def log_cmmd(
         "val_cmmd_score": val_cmmd_score,
         }, step=global_step)
 
+def prepare_for_inference(model):
+    model = accelerator.unwrap(model)
+    model.eval()
+    return model
+
+def prepare_for_training(model):
+    model = accelerator.prepare(model)
+    model.train()
+    return model
+
 def train(model):
     logger.info('starting training...')
     if config.get('debug_nan', False):
@@ -498,7 +510,8 @@ def train(model):
 
     if accelerator.is_main_process:
         if config.eval.at_start or config.cmmd.at_start:
-            pipeline = get_image_gen_pipeline()
+            model = prepare_for_inference(model)
+            pipeline = get_image_gen_pipeline(transformer=model)
 
         if config.eval.at_start:
             log_eval_images(pipeline=pipeline, global_step=global_step)
@@ -507,7 +520,7 @@ def train(model):
             log_cmmd(pipeline=pipeline, global_step=global_step)
         
         if pipeline:
-            pipeline.unload()
+            model = prepare_for_training(model)
             del pipeline
             flush()
 
@@ -582,11 +595,9 @@ def train(model):
             global_step += 1
             data_time_start= time.time()
 
-            accelerator.wait_for_everyone()
             if config.save_model_steps and global_step % config.save_model_steps == 0:
                 save_state(global_step)
 
-        accelerator.wait_for_everyone()
         if (config.save_model_epochs and epoch % config.save_model_epochs == 0) or epoch == config.num_epochs:
             save_state(global_step)
         
@@ -597,17 +608,20 @@ def train(model):
         should_log_cmmd = (config.cmmd.every_n_epochs and epoch % config.cmmd.every_n_epochs == 0) or epoch == config.num_epochs
 
         if (should_log_eval or should_log_cmmd) and accelerator.is_main_process:
-            pipeline = get_image_gen_pipeline()
+            model = prepare_for_inference(model)
+            pipeline = get_image_gen_pipeline(transformer=model)
             if should_log_eval:
                 log_eval_images(pipeline=pipeline, global_step=global_step)
             
             if should_log_cmmd:
                 log_cmmd(pipeline=pipeline, global_step=global_step)
-            pipeline.unload()
+            
+            model = prepare_for_training(model)
             del pipeline
             flush()
 
 def save_state(global_step):
+    accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         save_path = os.path.join(os.path.join(config.work_dir, 'checkpoints'), f"checkpoint-{global_step}")
         os.umask(0o000)

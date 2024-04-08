@@ -851,8 +851,8 @@ if __name__ == '__main__':
 
     if accelerator.is_main_process:
         tracker_config = dict(vars(config))
-        accelerator.init_trackers(f"tb_{timestamp}_{tracker_project_name}")
-        logger.info(f"Training tracker at tb_{timestamp}_{tracker_project_name}")
+        accelerator.init_trackers(tracker_project_name, config=tracker_config)
+        logger.info(f"Training tracker at {tracker_project_name}")
 
     start_epoch = 0
     start_step = 0
